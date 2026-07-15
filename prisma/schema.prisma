@@ -1,0 +1,740 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// GEOGRAPHY & LOCATION
+// ============================================
+
+model Division {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  code      String   @unique
+  zones     Zone[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Zone {
+  id         String     @id @default(cuid())
+  name       String
+  code       String     @unique
+  divisionId String
+  division   Division   @relation(fields: [divisionId], references: [id])
+  districts  District[]
+  users      User[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+}
+
+model District {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  zoneId    String
+  zone      Zone     @relation(fields: [zoneId], references: [id])
+  dealers   Dealer[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ============================================
+// USER & AUTHENTICATION
+// ============================================
+
+model User {
+  id              String     @id @default(cuid())
+  employeeId      String     @unique
+  email           String     @unique
+  password        String
+  fullName        String
+  phone           String
+  role            String     // SALES_MARKETING, MANAGEMENT_ADMIN, PRODUCTION_LOGISTICS
+  status          String     @default("ACTIVE")
+  zoneId          String?
+  zone            Zone?      @relation(fields: [zoneId], references: [id])
+  
+  dealersCreated  Dealer[]   @relation("DealerCreatedBy")
+  dealersApproved Dealer[]   @relation("DealerApprovedBy")
+  ordersCreated   Order[]    @relation("OrderCreatedBy")
+  ordersApproved  Order[]    @relation("OrderApprovedBy")
+  salesVisits     SalesVisit[]
+  dailyLogs       DailyLog[]
+  locationTracks  LocationTrack[]
+  allowanceClaims AllowanceClaim[]
+  allowanceApprovals AllowanceClaim[] @relation("AllowanceApprovedBy")
+  emailsSent      EmailLog[]     @relation("EmailSentBy")
+  recommendations Recommendation[]
+  invoicesCreated Invoice[]
+  paymentsRecorded Payment[]
+  
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+}
+
+// ============================================
+// DEALER MANAGEMENT
+// ============================================
+
+model Dealer {
+  id                  String       @id @default(cuid())
+  dealerCode          String?      @unique
+  
+  firmName            String
+  proprietorName      String
+  contactNumber       String
+  alternateContact    String?
+  email               String
+  
+  gstNumber           String
+  panNumber           String
+  aadharNumber        String?
+  
+  businessAddress     String
+  city                String
+  districtId          String
+  district            District     @relation(fields: [districtId], references: [id])
+  pinCode             String
+  
+  bankName            String
+  bankAccountNumber   String
+  ifscCode            String
+  
+  yearsInBusiness     Int
+  annualTurnover      String
+  creditPeriod        String       // DAYS_45, DAYS_60
+  existingBrands      String?
+  godownAvailable     Boolean
+  godownSize          Int?
+  vehicleAvailable    Boolean
+  
+  referenceName       String?
+  referenceContact    String?
+  
+  status              String       @default("DRAFT")
+  rejectionReason     String?
+  creditLimit         Float?
+  currentOutstanding  Float        @default(0)
+  
+  documents           DealerDocument[]
+  
+  createdById         String
+  createdBy           User         @relation("DealerCreatedBy", fields: [createdById], references: [id])
+  approvedById        String?
+  approvedBy          User?        @relation("DealerApprovedBy", fields: [approvedById], references: [id])
+  approvedAt          DateTime?
+  
+  orders              Order[]
+  invoices            Invoice[]
+  payments            Payment[]
+  creditNotes         CreditNote[]
+  recommendations     Recommendation[]
+  salesVisits         SalesVisit[]
+  
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+}
+
+model DealerDocument {
+  id           String   @id @default(cuid())
+  dealerId     String
+  dealer       Dealer   @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  documentType String
+  fileName     String
+  filePath     String
+  fileSize     Int
+  mimeType     String
+  uploadedAt   DateTime @default(now())
+}
+
+// ============================================
+// PRODUCT MANAGEMENT
+// ============================================
+
+model ProductCategory {
+  id            String              @id @default(cuid())
+  name          String              @unique
+  description   String?
+  subCategories ProductSubCategory[]
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+}
+
+model ProductSubCategory {
+  id          String          @id @default(cuid())
+  name        String
+  categoryId  String
+  category    ProductCategory @relation(fields: [categoryId], references: [id])
+  products    Product[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@unique([name, categoryId])
+}
+
+model Product {
+  id                  String             @id @default(cuid())
+  productCode         String             @unique
+  name                String
+  subCategoryId       String
+  subCategory         ProductSubCategory @relation(fields: [subCategoryId], references: [id])
+  unitOfMeasure       String
+  basePrice           Float
+  mrp                 Float?
+  gstRate             Float
+  status              String             @default("ACTIVE")
+  listSerialNo        Int?
+  packingSize         String?
+  hsnCode             String?
+  lotSize             String?
+  description         String?
+  technicalSpecs      String?
+  usageInstructions   String?
+  targetCrops         String?
+  applicationMethod   String?
+  
+  orderItems          OrderItem[]
+  inventoryItems      InventoryItem[]
+  recommendationItems RecommendationProduct[]
+  invoiceItems        InvoiceItem[]
+  
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+}
+
+// ============================================
+// SALES VISITS
+// ============================================
+
+model SalesVisit {
+  id              String    @id @default(cuid())
+  visitDate       DateTime
+  dealerId        String?
+  dealer          Dealer?   @relation(fields: [dealerId], references: [id])
+  prospectName    String?
+  purpose         String
+  personsMet      String
+  discussionNotes String
+  nextAction      String?
+  followUpDate    DateTime?
+  latitude        Float?
+  longitude       Float?
+  locationLabel   String?
+  
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  locationTracks  LocationTrack[]
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// ============================================
+// FIELD OPERATIONS — DAILY LOG, LOCATION, ALLOWANCE
+// ============================================
+
+model DailyLog {
+  id                String   @id @default(cuid())
+  logDate           DateTime
+  userId            String
+  user              User     @relation(fields: [userId], references: [id])
+  dayStartTime      DateTime?
+  dayEndTime        DateTime?
+  summary           String
+  dealersVisited    Int      @default(0)
+  ordersDiscussed   Int      @default(0)
+  kilometersTraveled Float?
+  expensesSummary   String?
+  status            String   @default("SUBMITTED")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([userId, logDate])
+}
+
+model LocationTrack {
+  id           String      @id @default(cuid())
+  userId       String
+  user         User        @relation(fields: [userId], references: [id])
+  recordedAt   DateTime    @default(now())
+  latitude     Float
+  longitude    Float
+  accuracy     Float?
+  source       String
+  visitId      String?
+  visit        SalesVisit? @relation(fields: [visitId], references: [id], onDelete: SetNull)
+  addressLabel String?
+  createdAt    DateTime    @default(now())
+}
+
+model AllowanceClaim {
+  id              String    @id @default(cuid())
+  claimDate       DateTime
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  claimType       String
+  amount          Float
+  description     String
+  kilometers      Float?
+  receiptNote     String?
+  status          String    @default("PENDING")
+  approvedById    String?
+  approvedBy      User?     @relation("AllowanceApprovedBy", fields: [approvedById], references: [id])
+  approvedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model EmailLog {
+  id        String   @id @default(cuid())
+  toEmail   String
+  ccEmail   String?
+  subject   String
+  body      String
+  emailType String
+  status    String   @default("PENDING")
+  error     String?
+  sentById  String?
+  sentBy    User?    @relation("EmailSentBy", fields: [sentById], references: [id])
+  sentAt    DateTime?
+  createdAt DateTime @default(now())
+}
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+// ============================================
+// ORDER MANAGEMENT
+// ============================================
+
+model Order {
+  id                    String      @id @default(cuid())
+  orderNumber           String      @unique
+  orderDate             DateTime    @default(now())
+  
+  dealerId              String
+  dealer                Dealer      @relation(fields: [dealerId], references: [id])
+  
+  deliveryAddress       String
+  requestedDeliveryDate DateTime?
+  specialInstructions   String?
+  
+  subtotal              Float
+  taxAmount             Float
+  totalAmount           Float
+  
+  status                String      @default("DRAFT")
+  rejectionReason       String?
+  
+  items                 OrderItem[]
+  dispatch              Dispatch?
+  invoice               Invoice?
+  
+  createdById           String
+  createdBy             User        @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  approvedById          String?
+  approvedBy            User?       @relation("OrderApprovedBy", fields: [approvedById], references: [id])
+  approvedAt            DateTime?
+  
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  quantity    Int
+  unitPrice   Float
+  gstRate     Float
+  taxAmount   Float
+  totalAmount Float
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ============================================
+// DISPATCH & LOGISTICS
+// ============================================
+
+model Dispatch {
+  id                   String   @id @default(cuid())
+  dispatchNumber       String   @unique
+  orderId              String   @unique
+  order                Order    @relation(fields: [orderId], references: [id])
+  
+  logisticsPartner     String
+  vehicleNumber        String?
+  driverName           String?
+  driverContact        String?
+  
+  dispatchDate         DateTime?
+  expectedDeliveryDate DateTime?
+  actualDeliveryDate   DateTime?
+  
+  status               String   @default("PENDING")
+  
+  podImage             String?
+  podSignature         String?
+  receivedBy           String?
+  deliveryNotes        String?
+  
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+// ============================================
+// INVENTORY
+// ============================================
+
+model InventoryItem {
+  id             String   @id @default(cuid())
+  productId      String
+  product        Product  @relation(fields: [productId], references: [id])
+  warehouseCode  String
+  quantity       Int
+  reorderLevel   Int
+  lastUpdated    DateTime @default(now())
+  
+  @@unique([productId, warehouseCode])
+}
+
+// ============================================
+// FARMER ADVISORY & RECOMMENDATIONS
+// ============================================
+
+model Recommendation {
+  id                 String                  @id @default(cuid())
+  
+  farmerName         String
+  contactNumber      String
+  village            String?
+  taluka             String?
+  districtName       String
+  
+  cropType           String
+  landSize           Float?
+  landUnit           String?
+  
+  issueType          String
+  issueDescription   String
+  symptomsObserved   String?
+  
+  recommendationText String
+  dosageApplication  String?
+  expectedOutcome    String?
+  
+  followUpRequired   Boolean                 @default(false)
+  followUpDate       DateTime?
+  followUpNotes      String?
+  
+  products           RecommendationProduct[]
+  
+  dealerId           String?
+  dealer             Dealer?                 @relation(fields: [dealerId], references: [id])
+  userId             String
+  user               User                    @relation(fields: [userId], references: [id])
+  
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+}
+
+model RecommendationProduct {
+  id               String         @id @default(cuid())
+  recommendationId String
+  recommendation   Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product        @relation(fields: [productId], references: [id])
+  reason           String
+}
+
+// ============================================
+// FINANCE - INVOICES
+// ============================================
+
+model Invoice {
+  id              String              @id @default(cuid())
+  invoiceNumber   String              @unique
+  invoiceDate     DateTime            @default(now())
+  
+  orderId         String?             @unique
+  order           Order?              @relation(fields: [orderId], references: [id])
+  dealerId        String
+  dealer          Dealer              @relation(fields: [dealerId], references: [id])
+  
+  subtotal        Float
+  cgstAmount      Float
+  sgstAmount      Float
+  igstAmount      Float
+  totalTax        Float
+  totalAmount     Float
+  
+  dueDate         DateTime
+  paidAmount      Float               @default(0)
+  balanceAmount   Float
+  status          String              @default("DRAFT")
+  
+  // GSTN Shipping Invoice Fields
+  placeOfSupply         String?
+  reverseCharge         Boolean             @default(false)
+  shippingName          String?
+  shippingAddress       String?
+  shippingCity          String?
+  shippingState         String?
+  shippingPincode       String?
+  shippingGstn          String?
+  transportMode         String?
+  vehicleNumber         String?
+  eWayBillNumber        String?
+  eWayBillDate          DateTime?
+  irnNumber             String?
+  irnDate               DateTime?
+  qrCode                String?
+  termsAndConditions    String?
+  bankDetails           String?
+  signatureImage        String?
+  
+  payments        PaymentAllocation[]
+  creditNotes     CreditNote[]
+  items           InvoiceItem[]
+  
+  createdById     String
+  createdBy       User                @relation(fields: [createdById], references: [id])
+  
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+}
+
+model InvoiceItem {
+  id              String   @id @default(cuid())
+  invoiceId       String
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product  @relation(fields: [productId], references: [id])
+  description     String?
+  hsnCode         String?
+  quantity        Int
+  unitPrice       Float
+  discount        Float    @default(0)
+  taxableValue    Float
+  cgstRate        Float    @default(0)
+  cgstAmount      Float    @default(0)
+  sgstRate        Float    @default(0)
+  sgstAmount      Float    @default(0)
+  igstRate        Float    @default(0)
+  igstAmount      Float    @default(0)
+  totalAmount     Float
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ============================================
+// FINANCE - CREDIT NOTES
+// ============================================
+
+model CreditNote {
+  id               String   @id @default(cuid())
+  creditNoteNumber String   @unique
+  creditNoteDate   DateTime @default(now())
+  
+  invoiceId        String
+  invoice          Invoice  @relation(fields: [invoiceId], references: [id])
+  dealerId         String
+  dealer           Dealer   @relation(fields: [dealerId], references: [id])
+  
+  type             String
+  reason           String
+  amount           Float
+  
+  status           String   @default("DRAFT")
+  approvedById     String?
+  approvedAt       DateTime?
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// ============================================
+// FINANCE - PAYMENTS
+// ============================================
+
+model Payment {
+  id              String              @id @default(cuid())
+  paymentDate     DateTime
+  dealerId        String
+  dealer          Dealer              @relation(fields: [dealerId], references: [id])
+  
+  paymentMode     String
+  referenceNumber String?
+  amount          Float
+  tdsDeducted     Float               @default(0)
+  netAmount       Float
+  
+  notes           String?
+  
+  allocations     PaymentAllocation[]
+  
+  recordedById    String
+  recordedBy      User                @relation(fields: [recordedById], references: [id])
+  
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+}
+
+model PaymentAllocation {
+  id              String   @id @default(cuid())
+  paymentId       String
+  payment         Payment  @relation(fields: [paymentId], references: [id])
+  invoiceId       String
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id])
+  allocatedAmount Float
+  
+  createdAt       DateTime @default(now())
+}
+
+// ============================================
+// DAICHI DEALER FORM SYNC (ERP INTEGRATION)
+// ============================================
+
+model DaichiDealer {
+  id                        String   @id @default(cuid())
+  externalId                String   @unique
+  syncStatus                String
+  sourceCreatedAt           DateTime?
+  sourceUpdatedAt           DateTime?
+  lastSyncedAt              DateTime @default(now())
+
+  firmName                  String?
+  firmAddress               String?
+  mobileNumber              String?
+  telephoneNumber           String?
+  email                     String?
+  dateOfBirth               DateTime?
+  contactPersonName         String?
+  contactPersonAddress      String?
+  gstNumber                 String?
+  panNumber                 String?
+  aadharNumber              String?
+  experienceInBusiness      String?
+  establishmentDate         DateTime?
+
+  distributorWholesalePct   Float?
+  distributorRetailerPct    Float?
+  securityDepositAmount     Float?
+  securityDepositPaymentMode String?
+  dealerDeclarationName     String?
+  dealerDeclarationPlace    String?
+  dealerDeclarationDate     DateTime?
+  managerRemark             String?
+  staffName                 String?
+
+  rawPersonalProfile        String?
+  rawFinancialProfile       String?
+  rawDocuments              String?
+
+  partners                  DaichiDealerPartner[]
+  bankAccounts              DaichiDealerBankAccount[]
+  infrastructures           DaichiDealerInfrastructure[]
+  otherCompanies            DaichiDealerOtherCompany[]
+  securityCheques           DaichiDealerSecurityCheque[]
+  documents                 DaichiDealerDocumentMeta[]
+  syncLogs                  DaichiDealerSyncLog[]
+
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+}
+
+model DaichiDealerPartner {
+  id              String       @id @default(cuid())
+  dealerId        String
+  dealer          DaichiDealer @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  name            String?
+  age             Int?
+  education       String?
+  experienceYears Int?
+  sortOrder       Int          @default(0)
+}
+
+model DaichiDealerBankAccount {
+  id             String       @id @default(cuid())
+  dealerId       String
+  dealer         DaichiDealer @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  bankName       String?
+  branch         String?
+  accountType    String?
+  accountNumber  String?
+  overdraftLimit Float?
+  sortOrder      Int          @default(0)
+}
+
+model DaichiDealerInfrastructure {
+  id         String       @id @default(cuid())
+  dealerId   String
+  dealer     DaichiDealer @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  type       String?
+  ownership  String?
+  details    String?
+  area       Float?
+  address    String?
+  sortOrder  Int          @default(0)
+}
+
+model DaichiDealerOtherCompany {
+  id             String       @id @default(cuid())
+  dealerId       String
+  dealer         DaichiDealer @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  companyName    String?
+  productDetails String?
+  annualBusiness String?
+  sortOrder      Int          @default(0)
+}
+
+model DaichiDealerSecurityCheque {
+  id            String       @id @default(cuid())
+  dealerId      String
+  dealer        DaichiDealer @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  bankName      String?
+  chequeNumber  String?
+  chequeDate    DateTime?
+  amount        Float?
+  sortOrder     Int          @default(0)
+}
+
+model DaichiDealerDocumentMeta {
+  id         String       @id @default(cuid())
+  dealerId   String
+  dealer     DaichiDealer @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+  docType    String
+  fileName   String?
+  mimeType   String?
+  size       Int?
+  storageKey String?
+  s3Key      String?
+
+  @@unique([dealerId, docType])
+}
+
+model DaichiDealerSyncLog {
+  id              String       @id @default(cuid())
+  dealerId        String?
+  dealer          DaichiDealer? @relation(fields: [dealerId], references: [id], onDelete: SetNull)
+  externalId      String?
+  runAt           DateTime     @default(now())
+  result          String
+  sourceUpdatedAt DateTime?
+  message         String?
+  payload         String?
+}
