@@ -43,6 +43,15 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "daichi-api", database: "mongodb" });
 });
 
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "daichi-api",
+    health: "/health",
+    api: "/api",
+  });
+});
+
 app.use("/api", mongoApiRouter);
 
 app.use("/api/sync/daichi", daichiSyncRouter);

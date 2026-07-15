@@ -13,7 +13,8 @@ export type JwtPayload = {
 export function signToken(user: JwtPayload): string {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error("JWT_SECRET is not set");
-  return jwt.sign(user, secret, { expiresIn: "30m" });
+  // 12h keeps client demos stable; NextAuth session maxAge must match
+  return jwt.sign(user, secret, { expiresIn: "12h" });
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
