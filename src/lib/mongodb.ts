@@ -174,6 +174,7 @@ async function createIndexes(): Promise<void> {
   await safeCreateIndex(invoicesCol, { balanceAmount: 1 });
   await safeCreateIndex(invoicesCol, { logisticsStatus: 1 });
   await safeCreateIndex(invoicesCol, { dispatchId: 1 }, { sparse: true, name: "dispatchId_sparse" });
+  await safeCreateIndex(invoicesCol, { orderId: 1 }, { sparse: true, name: "orderId_sparse" });
 
   const daichiDealersCol = db.collection("daichiDealers");
   await safeCreateIndex(daichiDealersCol, { externalId: 1 }, { unique: true, sparse: true });
@@ -193,6 +194,16 @@ async function createIndexes(): Promise<void> {
   await safeCreateIndex(creditNotesCol, { status: 1 });
   await safeCreateIndex(creditNotesCol, { dealerId: 1 });
   await safeCreateIndex(creditNotesCol, { createdAt: -1 });
+  await safeCreateIndex(creditNotesCol, { creditNoteNumber: 1 }, { unique: true, sparse: true });
+
+  const debitNotesCol = db.collection("debitNotes");
+  await safeCreateIndex(debitNotesCol, { status: 1 });
+  await safeCreateIndex(debitNotesCol, { dealerId: 1 });
+  await safeCreateIndex(debitNotesCol, { createdAt: -1 });
+  await safeCreateIndex(debitNotesCol, { debitNoteNumber: 1 }, { unique: true, sparse: true });
+
+  const paymentAllocIdxCol = db.collection("payments");
+  await safeCreateIndex(paymentAllocIdxCol, { paymentDate: -1 });
 
   const appSettingsCol = db.collection("appSettings");
   await safeCreateIndex(appSettingsCol, { key: 1 }, { unique: true });
@@ -281,7 +292,13 @@ export interface Product {
   mrp?: number;
   gstRate: number;
   hsnCode?: string;
+  packingType?: "LIQUID" | "POWDER_GRANULES";
   packingSize?: string;
+  /** Alternate (bulk) unit label: Case / Box / Bag. */
+  alternateUnit?: string;
+  /** Base units contained in one alternate unit, e.g. 1 Case = 6 Nos. */
+  unitsPerAlternate?: number;
+  batchNumber?: string;
   lotSize?: string;
   description?: string;
   technicalSpecs?: string;
@@ -370,6 +387,10 @@ export interface OrderItem {
   gstRate: number;
   taxAmount: number;
   totalAmount: number;
+  packingSize?: string;
+  unitOfMeasure?: string;
+  alternateUnit?: string;
+  unitsPerAlternate?: number;
 }
 
 export interface Invoice {
@@ -412,8 +433,12 @@ export interface Invoice {
   totalAmountInWords?: string;
   dueDate: Date;
   paidAmount: number;
+  /** Total value reduced by approved credit notes. */
+  creditAdjustment?: number;
+  /** Total value added by approved debit notes. */
+  debitAdjustment?: number;
   balanceAmount: number;
-  status: "DRAFT" | "SENT" | "PAID" | "OVERDUE" | "CANCELLED";
+  status: "DRAFT" | "SENT" | "PARTIALLY_PAID" | "PAID" | "OVERDUE" | "CANCELLED";
   logisticsStatus?: "READY_FOR_DISPATCH" | "PROCESSING" | "DISPATCHED" | "DELIVERED";
   dispatchId?: ObjectId;
   
@@ -495,9 +520,13 @@ export interface CreditNote {
   invoiceNumber?: string;
   dealerId: ObjectId;
   dealerName?: string;
+  /** Basis of the note: PAYMENT (financial adjustment) or PRODUCT (goods return). */
+  basis?: "PAYMENT" | "PRODUCT";
   type: string;
   reason: string;
   amount: number;
+  /** Whether the approved amount has been applied to the linked invoice balance. */
+  appliedToInvoice?: boolean;
   status: "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "REJECTED" | "CANCELLED";
   approvedById?: ObjectId;
   approvedByName?: string;
@@ -505,6 +534,56 @@ export interface CreditNote {
   rejectionReason?: string;
   createdById?: ObjectId;
   createdByName?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface DebitNote {
+  _id?: ObjectId;
+  debitNoteNumber: string;
+  debitNoteDate: Date;
+  invoiceId: ObjectId;
+  invoiceNumber?: string;
+  dealerId: ObjectId;
+  dealerName?: string;
+  type: string;
+  reason: string;
+  amount: number;
+  appliedToInvoice?: boolean;
+  status: "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "REJECTED" | "CANCELLED";
+  approvedById?: ObjectId;
+  approvedByName?: string;
+  approvedAt?: Date;
+  rejectionReason?: string;
+  createdById?: ObjectId;
+  createdByName?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface PaymentAllocation {
+  invoiceId: ObjectId;
+  invoiceNumber?: string;
+  amount: number;
+}
+
+export interface Payment {
+  _id?: ObjectId;
+  dealerId: ObjectId;
+  dealerName?: string;
+  paymentMode: string;
+  amount: number;
+  netAmount: number;
+  tdsDeducted: number;
+  paymentDate: Date;
+  referenceNumber?: string;
+  notes?: string;
+  /** Invoices this payment was applied to. */
+  allocations?: PaymentAllocation[];
+  /** Amount not applied to any invoice (advance / on-account). */
+  unallocatedAmount?: number;
+  recordedById: ObjectId;
+  recordedByName?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -674,7 +753,14 @@ export interface DailyLog {
   summary: string;
   dealersVisited: number;
   ordersDiscussed: number;
+  openingKm?: number;
+  closingKm?: number;
   kilometersTraveled?: number;
+  // Daily achievement report
+  salesAmount?: number;
+  collectionAmount?: number;
+  newDealersAppointed?: number;
+  achievementNotes?: string;
   expensesSummary?: string;
   odometerPhoto?: string;
   latitude?: number;

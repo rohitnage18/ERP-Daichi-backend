@@ -182,44 +182,73 @@ router.get("/", async (req, res) => {
     }
 
     const dealers = await daichiDealersCol
-      .find(filter)
-      .sort({ sourceUpdatedAt: -1 })
+      .aggregate([
+        { $match: filter },
+        { $sort: { sourceUpdatedAt: -1 } },
+        { $limit: 200 },
+        {
+          $project: {
+            externalId: 1,
+            syncStatus: 1,
+            firmName: 1,
+            email: 1,
+            mobileNumber: 1,
+            telephoneNumber: 1,
+            gstNumber: 1,
+            panNumber: 1,
+            city: 1,
+            state: 1,
+            firmAddress: 1,
+            pincode: 1,
+            sourceCreatedAt: 1,
+            sourceUpdatedAt: 1,
+            lastSyncedAt: 1,
+            approvalStatus: 1,
+            creditLimit: 1,
+            dealerGrade: 1,
+            contactPersonName: 1,
+            partnersCount: { $size: { $ifNull: ["$partners", []] } },
+            bankAccountsCount: { $size: { $ifNull: ["$bankAccounts", []] } },
+            infrastructuresCount: { $size: { $ifNull: ["$infrastructures", []] } },
+            documentsCount: { $size: { $ifNull: ["$documents", []] } },
+          },
+        },
+      ])
       .toArray();
 
-    return res.json(dealers.map((d) => ({
-      id: d._id?.toString(),
-      externalId: d.externalId,
-      syncStatus: d.syncStatus,
-      firmName: d.firmName,
-      email: d.email,
-      mobileNumber: d.mobileNumber,
-      gstNumber: d.gstNumber,
-      gstNo: d.gstNumber,
-      panNumber: d.panNumber,
-      city: d.city || '',
-      state: d.state || '',
-      firmAddress: d.firmAddress || '',
-      businessAddress: d.firmAddress || '',
-      pincode: d.pincode || '',
-      sourceCreatedAt: d.sourceCreatedAt,
-      sourceUpdatedAt: d.sourceUpdatedAt,
-      lastSyncedAt: d.lastSyncedAt,
-      approvalStatus: d.approvalStatus || "APPROVED",
-      creditLimit: d.creditLimit,
-      dealerGrade: d.dealerGrade,
-      contactPersonName: d.contactPersonName,
-      proprietorName: d.contactPersonName,
-      contactNumber: d.mobileNumber || d.telephoneNumber,
-      _count: {
-        partners: d.partners?.length || 0,
-        bankAccounts: d.bankAccounts?.length || 0,
-        infrastructures: d.infrastructures?.length || 0,
-        documents: d.documents?.length || 0,
-      },
-      partners: d.partners || [],
-      bankAccounts: d.bankAccounts || [],
-      documents: mapDocumentsWithId(d.documents),
-    })));
+    return res.json(
+      dealers.map((d) => ({
+        id: d._id?.toString(),
+        externalId: d.externalId,
+        syncStatus: d.syncStatus,
+        firmName: d.firmName,
+        email: d.email,
+        mobileNumber: d.mobileNumber,
+        gstNumber: d.gstNumber,
+        gstNo: d.gstNumber,
+        panNumber: d.panNumber,
+        city: d.city || "",
+        state: d.state || "",
+        firmAddress: d.firmAddress || "",
+        businessAddress: d.firmAddress || "",
+        pincode: d.pincode || "",
+        sourceCreatedAt: d.sourceCreatedAt,
+        sourceUpdatedAt: d.sourceUpdatedAt,
+        lastSyncedAt: d.lastSyncedAt,
+        approvalStatus: d.approvalStatus || "APPROVED",
+        creditLimit: d.creditLimit,
+        dealerGrade: d.dealerGrade,
+        contactPersonName: d.contactPersonName,
+        proprietorName: d.contactPersonName,
+        contactNumber: d.mobileNumber || d.telephoneNumber,
+        _count: {
+          partners: d.partnersCount || 0,
+          bankAccounts: d.bankAccountsCount || 0,
+          infrastructures: d.infrastructuresCount || 0,
+          documents: d.documentsCount || 0,
+        },
+      }))
+    );
   } catch (error) {
     console.error("Error fetching Daichi dealers:", error);
     return res.status(500).json({ error: "Failed to fetch Daichi dealers" });

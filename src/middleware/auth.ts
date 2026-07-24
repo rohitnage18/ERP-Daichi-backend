@@ -14,7 +14,7 @@ export function signToken(user: JwtPayload): string {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error("JWT_SECRET is not set");
   // 12h keeps client demos stable; NextAuth session maxAge must match
-  return jwt.sign(user, secret, { expiresIn: "12h" });
+  return jwt.sign(user, secret, { expiresIn: "12h", algorithm: "HS256" });
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -25,7 +25,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   try {
     const secret = process.env.JWT_SECRET;
     if (!secret) throw new Error("JWT_SECRET is not set");
-    req.user = jwt.verify(header.slice(7), secret) as JwtPayload;
+    req.user = jwt.verify(header.slice(7), secret, { algorithms: ["HS256"] }) as JwtPayload;
     next();
   } catch {
     return res.status(401).json({ error: "Unauthorized" });

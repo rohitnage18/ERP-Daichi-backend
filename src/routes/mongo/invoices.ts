@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { getDb, Invoice, Dealer, Product, DaichiDealer, ObjectId } from "../../lib/mongodb";
+import { Db } from "mongodb";
+import { getDb, Invoice, Order, Dealer, Product, DaichiDealer, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { sendEmail } from "../../lib/email";
 import { amountToWords, getStateCodeFromGSTIN, getStateNameFromCode, getUQCCode } from "../../lib/utils";
@@ -236,21 +237,23 @@ interface CreateInvoiceBody {
   items: InvoiceItemInput[];
 }
 
-router.post(
-  "/",
-  requireRole("MANAGEMENT_ADMIN", "ACCOUNT"),
-  async (req, res) => {
-    try {
-      const db = await getDb();
-      const invoicesCol = db.collection<Invoice>("invoices");
+/**
+ * Build a complete Invoice document from a request body (shared by the manual
+ * create route and the "generate from approved order" route). Throws on
+ * validation problems; the caller maps errors to HTTP responses.
+ */
+async function buildInvoiceDoc(
+  db: Db,
+  body: CreateInvoiceBody,
+  userId: string,
+  userEmail: string
+): Promise<Invoice> {
       const dealersCol = db.collection<Dealer>("dealers");
       const daichiDealersCol = db.collection<DaichiDealer>("daichiDealers");
       const productsCol = db.collection<Product>("products");
-      
-      const body = req.body as CreateInvoiceBody;
-      
+
       if (!body.dealerId || !body.items || body.items.length === 0) {
-        return res.status(400).json({ error: "dealerId and items are required" });
+        throw new Error("dealerId and items are required");
       }
       
       let dealer: Dealer | DaichiDealer | null = null;
@@ -279,7 +282,7 @@ router.post(
       }
       
       if (!dealer) {
-        return res.status(404).json({ error: "Dealer not found" });
+        throw new Error("DEALER_NOT_FOUND");
       }
       
       const isDaichiDealer = "externalId" in dealer;
@@ -461,14 +464,36 @@ router.post(
         termsAndConditions: body.termsAndConditions,
         bankDetails: body.bankDetails,
         
-        createdById: new ObjectId(req.user!.id),
-        createdByName: req.user!.email,
+        createdById: new ObjectId(userId),
+        createdByName: userEmail,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      
+
+      return invoice;
+}
+
+function mapInvoiceError(error: unknown): { status: number; message: string } {
+  const message = error instanceof Error ? error.message : "Failed to create invoice";
+  if (message === "DEALER_NOT_FOUND") return { status: 404, message: "Dealer not found" };
+  if (message === "dealerId and items are required" || message.includes("not found")) {
+    return { status: 400, message };
+  }
+  return { status: 500, message: "Failed to create invoice" };
+}
+
+router.post(
+  "/",
+  requireRole("MANAGEMENT_ADMIN", "ACCOUNT"),
+  async (req, res) => {
+    try {
+      const db = await getDb();
+      const invoicesCol = db.collection<Invoice>("invoices");
+      const body = req.body as CreateInvoiceBody;
+
+      const invoice = await buildInvoiceDoc(db, body, req.user!.id, req.user!.email);
       const result = await invoicesCol.insertOne(invoice);
-      
+
       return res.status(201).json({
         ...invoice,
         id: result.insertedId.toString(),
@@ -476,7 +501,73 @@ router.post(
       });
     } catch (error) {
       console.error("Error creating invoice:", error);
-      return res.status(500).json({ error: "Failed to create invoice" });
+      const { status, message } = mapInvoiceError(error);
+      return res.status(status).json({ error: message });
+    }
+  }
+);
+
+// Generate a DRAFT invoice from an approved order (Accounts / Admin).
+router.post(
+  "/from-order/:orderId",
+  requireRole("MANAGEMENT_ADMIN", "ACCOUNT"),
+  async (req, res) => {
+    try {
+      const db = await getDb();
+      const invoicesCol = db.collection<Invoice>("invoices");
+      const ordersCol = db.collection<Order>("orders");
+
+      const { orderId } = req.params;
+      if (!ObjectId.isValid(orderId)) {
+        return res.status(400).json({ error: "Invalid order ID" });
+      }
+
+      const order = await ordersCol.findOne({ _id: new ObjectId(orderId) });
+      if (!order) {
+        return res.status(404).json({ error: "Order not found" });
+      }
+      if (order.status === "DRAFT" || order.status === "PENDING_APPROVAL") {
+        return res
+          .status(400)
+          .json({ error: "Order must be approved before generating an invoice" });
+      }
+
+      const existing = await invoicesCol.findOne({ orderId: order._id! });
+      if (existing) {
+        return res.status(400).json({
+          error: "An invoice already exists for this order",
+          invoiceId: existing._id?.toString(),
+        });
+      }
+
+      // Default due date: 30 days from today.
+      const dueDate = new Date();
+      dueDate.setDate(dueDate.getDate() + 30);
+
+      const body: CreateInvoiceBody = {
+        dealerId: order.dealerId.toString(),
+        orderId: order._id!.toString(),
+        orderNumber: order.orderNumber,
+        dueDate: dueDate.toISOString(),
+        items: order.items.map((it) => ({
+          productId: it.productId.toString(),
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+        })),
+      };
+
+      const invoice = await buildInvoiceDoc(db, body, req.user!.id, req.user!.email);
+      const result = await invoicesCol.insertOne(invoice);
+
+      return res.status(201).json({
+        ...invoice,
+        id: result.insertedId.toString(),
+        _id: result.insertedId,
+      });
+    } catch (error) {
+      console.error("Error generating invoice from order:", error);
+      const { status, message } = mapInvoiceError(error);
+      return res.status(status).json({ error: message });
     }
   }
 );

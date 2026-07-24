@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { getDb, CreditNote, Invoice, ObjectId } from "../../lib/mongodb";
-import { generateCreditNoteNumber } from "../../lib/utils";
+import { getDb, DebitNote, Invoice, ObjectId } from "../../lib/mongodb";
+import { generateDebitNoteNumber } from "../../lib/utils";
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { recomputeInvoiceBalance } from "../../lib/invoice-balance";
 
@@ -8,17 +8,17 @@ const router = Router();
 
 router.use(requireAuth);
 
-async function nextCreditNoteNumber(): Promise<string> {
+async function nextDebitNoteNumber(): Promise<string> {
   const db = await getDb();
-  const col = db.collection<CreditNote>("creditNotes");
+  const col = db.collection<DebitNote>("debitNotes");
   const count = await col.countDocuments();
-  return generateCreditNoteNumber(count + 1);
+  return generateDebitNoteNumber(count + 1);
 }
 
 router.get("/", async (req, res) => {
   try {
     const db = await getDb();
-    const col = db.collection<CreditNote>("creditNotes");
+    const col = db.collection<DebitNote>("debitNotes");
     const { status } = req.query;
 
     const filter: Record<string, unknown> = {};
@@ -26,29 +26,29 @@ router.get("/", async (req, res) => {
       filter.status = status;
     }
 
-    const creditNotes = await col.find(filter).sort({ createdAt: -1 }).toArray();
+    const debitNotes = await col.find(filter).sort({ createdAt: -1 }).toArray();
 
     return res.json(
-      creditNotes.map((cn) => ({
-        ...cn,
-        id: cn._id?.toString(),
-        dealer: { firmName: cn.dealerName || "" },
-        invoice: { invoiceNumber: cn.invoiceNumber || "" },
+      debitNotes.map((dn) => ({
+        ...dn,
+        id: dn._id?.toString(),
+        dealer: { firmName: dn.dealerName || "" },
+        invoice: { invoiceNumber: dn.invoiceNumber || "" },
       }))
     );
   } catch (error) {
-    console.error("Error fetching credit notes:", error);
-    return res.status(500).json({ error: "Failed to fetch credit notes" });
+    console.error("Error fetching debit notes:", error);
+    return res.status(500).json({ error: "Failed to fetch debit notes" });
   }
 });
 
 router.post("/", requireRole("ACCOUNT"), async (req, res) => {
   try {
     const db = await getDb();
-    const col = db.collection<CreditNote>("creditNotes");
+    const col = db.collection<DebitNote>("debitNotes");
     const invoicesCol = db.collection<Invoice>("invoices");
 
-    const { invoiceId, type, reason, amount, basis } = req.body;
+    const { invoiceId, type, reason, amount } = req.body;
 
     if (!invoiceId || !ObjectId.isValid(invoiceId)) {
       return res.status(400).json({ error: "Valid invoice ID is required" });
@@ -65,23 +65,15 @@ router.post("/", requireRole("ACCOUNT"), async (req, res) => {
       return res.status(404).json({ error: "Invoice not found" });
     }
 
-    if (Number(amount) > Number(invoice.totalAmount) + 0.01) {
-      return res
-        .status(400)
-        .json({ error: "Credit note amount cannot exceed the invoice total" });
-    }
+    const debitNoteNumber = await nextDebitNoteNumber();
 
-    const creditNoteNumber = await nextCreditNoteNumber();
-    const noteBasis = basis === "PRODUCT" ? "PRODUCT" : "PAYMENT";
-
-    const creditNote: CreditNote = {
-      creditNoteNumber,
-      creditNoteDate: new Date(),
+    const debitNote: DebitNote = {
+      debitNoteNumber,
+      debitNoteDate: new Date(),
       invoiceId: invoice._id!,
       invoiceNumber: invoice.invoiceNumber,
       dealerId: invoice.dealerId,
       dealerName: invoice.dealerName,
-      basis: noteBasis,
       type: type.trim(),
       reason: reason.trim(),
       amount: Number(amount),
@@ -93,29 +85,29 @@ router.post("/", requireRole("ACCOUNT"), async (req, res) => {
       updatedAt: new Date(),
     };
 
-    const result = await col.insertOne(creditNote);
+    const result = await col.insertOne(debitNote);
 
     return res.status(201).json({
-      ...creditNote,
+      ...debitNote,
       id: result.insertedId.toString(),
       _id: result.insertedId,
-      dealer: { firmName: creditNote.dealerName || "" },
-      invoice: { invoiceNumber: creditNote.invoiceNumber || "" },
+      dealer: { firmName: debitNote.dealerName || "" },
+      invoice: { invoiceNumber: debitNote.invoiceNumber || "" },
     });
   } catch (error) {
-    console.error("Error creating credit note:", error);
-    return res.status(500).json({ error: "Failed to create credit note" });
+    console.error("Error creating debit note:", error);
+    return res.status(500).json({ error: "Failed to create debit note" });
   }
 });
 
 router.post("/:id/approve", requireRole("MANAGEMENT_ADMIN"), async (req, res) => {
   try {
     const db = await getDb();
-    const col = db.collection<CreditNote>("creditNotes");
+    const col = db.collection<DebitNote>("debitNotes");
     const { id } = req.params;
 
     if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid credit note ID" });
+      return res.status(400).json({ error: "Invalid debit note ID" });
     }
 
     const result = await col.findOneAndUpdate(
@@ -133,15 +125,15 @@ router.post("/:id/approve", requireRole("MANAGEMENT_ADMIN"), async (req, res) =>
     );
 
     if (!result) {
-      return res.status(404).json({ error: "Credit note not found or not pending approval" });
+      return res.status(404).json({ error: "Debit note not found or not pending approval" });
     }
 
-    // Apply the credit to the linked invoice's balance (once).
+    // A debit note increases the amount owed on the linked invoice (once).
     if (!result.appliedToInvoice && result.invoiceId) {
       const invoicesCol = db.collection<Invoice>("invoices");
       await invoicesCol.updateOne(
         { _id: result.invoiceId },
-        { $inc: { creditAdjustment: result.amount } }
+        { $inc: { debitAdjustment: result.amount } }
       );
       await recomputeInvoiceBalance(db, result.invoiceId);
       await col.updateOne({ _id: result._id }, { $set: { appliedToInvoice: true } });
@@ -154,20 +146,20 @@ router.post("/:id/approve", requireRole("MANAGEMENT_ADMIN"), async (req, res) =>
       invoice: { invoiceNumber: result.invoiceNumber || "" },
     });
   } catch (error) {
-    console.error("Error approving credit note:", error);
-    return res.status(500).json({ error: "Failed to approve credit note" });
+    console.error("Error approving debit note:", error);
+    return res.status(500).json({ error: "Failed to approve debit note" });
   }
 });
 
 router.post("/:id/reject", requireRole("MANAGEMENT_ADMIN"), async (req, res) => {
   try {
     const db = await getDb();
-    const col = db.collection<CreditNote>("creditNotes");
+    const col = db.collection<DebitNote>("debitNotes");
     const { id } = req.params;
     const { reason } = req.body;
 
     if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Invalid credit note ID" });
+      return res.status(400).json({ error: "Invalid debit note ID" });
     }
 
     const result = await col.findOneAndUpdate(
@@ -183,7 +175,7 @@ router.post("/:id/reject", requireRole("MANAGEMENT_ADMIN"), async (req, res) => 
     );
 
     if (!result) {
-      return res.status(404).json({ error: "Credit note not found or not pending approval" });
+      return res.status(404).json({ error: "Debit note not found or not pending approval" });
     }
 
     return res.json({
@@ -193,8 +185,8 @@ router.post("/:id/reject", requireRole("MANAGEMENT_ADMIN"), async (req, res) => 
       invoice: { invoiceNumber: result.invoiceNumber || "" },
     });
   } catch (error) {
-    console.error("Error rejecting credit note:", error);
-    return res.status(500).json({ error: "Failed to reject credit note" });
+    console.error("Error rejecting debit note:", error);
+    return res.status(500).json({ error: "Failed to reject debit note" });
   }
 });
 

@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { mongoApiRouter } from "./routes/mongo";
-import { connectMongoDB } from "./lib/mongodb";
+import { connectMongoDB, getDb } from "./lib/mongodb";
 import { startDaichiDealerScheduler } from "./lib/daichi-sync-mongo";
 import daichiSyncRouter from "./routes/daichiSync";
 import daichiDealersRouter from "./routes/daichiDealers";
@@ -27,20 +27,36 @@ function isAllowedOrigin(origin: string): boolean {
   return getAllowedOrigins().includes(origin);
 }
 
+/** Basic security headers without extra deps */
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-XSS-Protection", "0");
+  res.removeHeader("X-Powered-By");
+  next();
+});
+
 app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (isAllowedOrigin(origin)) return callback(null, true);
-      callback(new Error(`Not allowed by CORS: ${origin}`));
+      callback(null, false);
     },
     credentials: true,
   })
 );
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "2mb" }));
 
-app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "daichi-api", database: "mongodb" });
+app.get("/health", async (_req, res) => {
+  try {
+    const db = await getDb();
+    await db.command({ ping: 1 });
+    res.json({ ok: true, service: "daichi-api", database: "mongodb" });
+  } catch {
+    res.status(503).json({ ok: false, service: "daichi-api", database: "unavailable" });
+  }
 });
 
 app.get("/", (_req, res) => {
@@ -60,6 +76,12 @@ app.use("/api/exports", exportsRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
+});
+
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("Unhandled error:", err.message);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "Internal server error" });
 });
 
 async function startServer() {

@@ -6,6 +6,26 @@ const router = Router();
 
 router.use(requireAuth);
 
+/**
+ * Normalise packaging fields: coerce numeric conversion and (re)generate a
+ * lotSize string so the invoice/billing case-label logic keeps working.
+ */
+function normalizePackaging(data: Record<string, unknown>): void {
+  if (data.unitsPerAlternate != null && data.unitsPerAlternate !== "") {
+    data.unitsPerAlternate = Number(data.unitsPerAlternate);
+  }
+  if (data.basePrice != null && data.basePrice !== "") data.basePrice = Number(data.basePrice);
+  if (data.mrp != null && data.mrp !== "") data.mrp = Number(data.mrp);
+  if (data.gstRate != null && data.gstRate !== "") data.gstRate = Number(data.gstRate);
+
+  const size = (data.packingSize as string) || "";
+  const units = Number(data.unitsPerAlternate);
+  if (size && units > 0) {
+    // Format understood by parseUnitsPerCase(): "<size> * <n> unit".
+    data.lotSize = `${size} * ${units} unit`;
+  }
+}
+
 router.get("/", async (req, res) => {
   try {
     const db = await getDb();
@@ -105,6 +125,7 @@ router.post(
       const categoriesCol = db.collection<ProductCategory>("productCategories");
       
       const { categoryId, ...productData } = req.body;
+      normalizePackaging(productData);
       
       let category;
       if (categoryId && ObjectId.isValid(categoryId)) {
@@ -155,6 +176,17 @@ router.patch(
       
       delete updateData._id;
       delete updateData.id;
+      normalizePackaging(updateData);
+
+      // Resolve category name if category changed.
+      if (updateData.categoryId && ObjectId.isValid(updateData.categoryId)) {
+        const categoriesCol = db.collection<ProductCategory>("productCategories");
+        const category = await categoriesCol.findOne({
+          _id: new ObjectId(updateData.categoryId as string),
+        });
+        updateData.categoryId = new ObjectId(updateData.categoryId as string);
+        if (category) updateData.categoryName = category.name;
+      }
       
       const result = await productsCol.findOneAndUpdate(
         { _id: new ObjectId(id) },

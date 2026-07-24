@@ -6,8 +6,16 @@ const router = Router();
 
 router.use(requireAuth);
 
+export type SalesActivityType =
+  | "RECOMMENDATION"
+  | "FIELD_WORK"
+  | "DEMO"
+  | "FARMER_MEETING"
+  | "CAMPAIGN";
+
 export interface Recommendation {
   _id?: ObjectId;
+  activityType?: SalesActivityType;
   farmerName: string;
   contactNumber: string;
   villageName?: string;
@@ -133,6 +141,7 @@ router.post("/", async (req, res) => {
     
     const user = (req as any).user;
     const {
+      activityType,
       farmerName,
       contactNumber,
       villageName,
@@ -146,6 +155,14 @@ router.post("/", async (req, res) => {
       followUpDate,
       productIds,
     } = req.body;
+
+    const validActivityTypes = [
+      "RECOMMENDATION",
+      "FIELD_WORK",
+      "DEMO",
+      "FARMER_MEETING",
+      "CAMPAIGN",
+    ];
     
     let products: Recommendation["products"] = [];
     if (productIds && Array.isArray(productIds)) {
@@ -161,6 +178,9 @@ router.post("/", async (req, res) => {
     }
     
     const newRecommendation: Recommendation = {
+      activityType: validActivityTypes.includes(activityType)
+        ? (activityType as SalesActivityType)
+        : "RECOMMENDATION",
       farmerName,
       contactNumber,
       villageName,

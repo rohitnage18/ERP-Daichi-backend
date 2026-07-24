@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { Db } from "mongodb";
 import { getDb, Dispatch, Invoice, Order, ObjectId } from "../../lib/mongodb";
 import { generateDispatchNumber } from "../../lib/utils";
 import { requireAuth, requireRole } from "../../middleware/auth";
@@ -6,6 +7,35 @@ import { requireAuth, requireRole } from "../../middleware/auth";
 const router = Router();
 
 router.use(requireAuth);
+
+/**
+ * Deduct dispatched quantities from inventory. Best-effort: never throws so a
+ * stock hiccup cannot block a dispatch.
+ */
+async function deductInventory(
+  db: Db,
+  items: { productId: ObjectId; quantity: number }[]
+): Promise<void> {
+  try {
+    const now = new Date();
+    const ops = items
+      .filter((item) => item?.productId && item.quantity)
+      .map((item) => ({
+        updateOne: {
+          filter: { productId: item.productId },
+          update: {
+            $inc: { quantity: -Math.abs(Number(item.quantity)) },
+            $set: { lastUpdated: now },
+          },
+        },
+      }));
+    if (ops.length > 0) {
+      await db.collection("inventoryItems").bulkWrite(ops, { ordered: false });
+    }
+  } catch (error) {
+    console.error("Inventory deduction failed (non-fatal):", error);
+  }
+}
 
 router.get("/", async (_req, res) => {
   try {
@@ -99,6 +129,11 @@ router.post("/", requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS"), async 
         }
       );
 
+      await deductInventory(
+        db,
+        (invoice.items || []).map((it) => ({ productId: it.productId, quantity: it.quantity }))
+      );
+
       return res.status(201).json({
         ...dispatchPayload,
         id: result.insertedId.toString(),
@@ -144,6 +179,11 @@ router.post("/", requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS"), async 
     await ordersCol.updateOne(
       { _id: new ObjectId(orderId) },
       { $set: { status: "PROCESSING", updatedAt: new Date() } }
+    );
+
+    await deductInventory(
+      db,
+      (order.items || []).map((it) => ({ productId: it.productId, quantity: it.quantity }))
     );
 
     return res.status(201).json({

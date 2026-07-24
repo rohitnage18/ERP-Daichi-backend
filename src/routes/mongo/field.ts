@@ -149,7 +149,16 @@ router.post("/daily-logs", async (req, res) => {
       summary: data.summary,
       dealersVisited: data.dealersVisited ?? 0,
       ordersDiscussed: data.ordersDiscussed ?? 0,
-      kilometersTraveled: data.kilometersTraveled ?? undefined,
+      openingKm: data.openingKm ?? undefined,
+      closingKm: data.closingKm ?? undefined,
+      kilometersTraveled:
+        data.openingKm != null && data.closingKm != null
+          ? Math.max(0, Number(data.closingKm) - Number(data.openingKm))
+          : data.kilometersTraveled ?? undefined,
+      salesAmount: data.salesAmount ?? undefined,
+      collectionAmount: data.collectionAmount ?? undefined,
+      newDealersAppointed: data.newDealersAppointed ?? undefined,
+      achievementNotes: data.achievementNotes || undefined,
       expensesSummary: data.expensesSummary || undefined,
       odometerPhoto: data.odometerPhoto || undefined,
       latitude: data.latitude ?? undefined,

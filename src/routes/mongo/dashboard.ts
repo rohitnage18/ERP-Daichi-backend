@@ -43,7 +43,6 @@ router.get("/stats", async (_req, res) => {
       overdueInvoices,
       sentInvoices,
       paidInvoices,
-      totalDealers,
       approvedDealers,
       submittedDealers,
       totalProducts,
@@ -56,90 +55,91 @@ router.get("/stats", async (_req, res) => {
       totalCreditNotes,
       totalPayments,
       paymentsThisMonth,
-      inventoryItems,
+      totalInventorySkus,
+      lowStockCount,
       pendingDaichiDealers,
       pendingInvoiceDispatch,
+      revenueResult,
+      paymentsMtdResult,
+      recentOrders,
+      pendingDealerApprovals,
+      pendingOrderApprovals,
+      pendingCreditNoteApprovals,
     ] = await Promise.all([
-      ordersCol.countDocuments(),
+      ordersCol.estimatedDocumentCount(),
       ordersCol.countDocuments({ status: "PENDING_APPROVAL" }),
       ordersCol.countDocuments({ status: "APPROVED" }),
       ordersCol.countDocuments({ status: "PROCESSING" }),
       ordersCol.countDocuments({ status: "DISPATCHED" }),
       ordersCol.countDocuments({ status: "DELIVERED" }),
-      invoicesCol.countDocuments(),
+      invoicesCol.estimatedDocumentCount(),
       invoicesCol.countDocuments({ status: "OVERDUE" }),
       invoicesCol.countDocuments({ status: "SENT" }),
       invoicesCol.countDocuments({ status: "PAID" }),
-      dealersCol.countDocuments(),
       dealersCol.countDocuments({ status: "APPROVED" }),
       dealersCol.countDocuments({ status: "SUBMITTED" }),
-      productsCol.countDocuments(),
+      productsCol.estimatedDocumentCount(),
       productsCol.countDocuments({ status: "ACTIVE" }),
-      daichiDealersCol.countDocuments(),
+      daichiDealersCol.estimatedDocumentCount(),
       dispatchesCol.countDocuments({ status: { $nin: ["DELIVERED"] } }),
       dispatchesCol.countDocuments({ status: "DELIVERED" }),
       creditNotesCol.countDocuments({ status: "PENDING_APPROVAL" }),
       creditNotesCol.countDocuments({ status: "APPROVED" }),
-      creditNotesCol.countDocuments(),
-      paymentsCol.countDocuments().catch(() => 0),
+      creditNotesCol.estimatedDocumentCount(),
+      paymentsCol.estimatedDocumentCount().catch(() => 0),
       paymentsCol
         .countDocuments({ paymentDate: { $gte: monthStart } })
         .catch(() => 0),
-      inventoryCol.find({}).toArray().catch(() => []),
+      inventoryCol.estimatedDocumentCount().catch(() => 0),
+      inventoryCol
+        .countDocuments({
+          $expr: {
+            $lte: ["$quantity", { $ifNull: ["$reorderLevel", 0] }],
+          },
+        })
+        .catch(() => 0),
       daichiDealersCol.countDocuments({ approvalStatus: "PENDING" }),
       invoicesCol.countDocuments({
         status: { $nin: ["CANCELLED"] },
         dispatchId: { $exists: false },
         $or: [{ logisticsStatus: "READY_FOR_DISPATCH" }, { logisticsStatus: { $exists: false } }],
       }),
-    ]);
-
-    const lowStockCount = Array.isArray(inventoryItems)
-      ? inventoryItems.filter((item) => {
-          const row = item as { quantity?: number; reorderLevel?: number };
-          return (row.quantity ?? 0) <= (row.reorderLevel ?? 0);
-        }).length
-      : 0;
-
-    const revenueResult = await invoicesCol
-      .aggregate([
-        { $match: { status: { $in: ["SENT", "PAID", "OVERDUE"] } } },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: "$totalAmount" },
-            paid: { $sum: "$paidAmount" },
+      invoicesCol
+        .aggregate([
+          { $match: { status: { $in: ["SENT", "PAID", "OVERDUE"] } } },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: "$totalAmount" },
+              paid: { $sum: "$paidAmount" },
+            },
           },
-        },
-      ])
-      .toArray();
+        ])
+        .toArray(),
+      paymentsCol
+        .aggregate([
+          { $match: { paymentDate: { $gte: monthStart } } },
+          { $group: { _id: null, total: { $sum: "$amount" } } },
+        ])
+        .toArray()
+        .catch(() => []),
+      ordersCol.find({}).sort({ createdAt: -1 }).limit(5).toArray(),
+      dealersCol.find({ status: "SUBMITTED" }).sort({ createdAt: -1 }).limit(5).toArray(),
+      ordersCol
+        .find({ status: "PENDING_APPROVAL" })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .toArray(),
+      creditNotesCol
+        .find({ status: "PENDING_APPROVAL" })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .toArray(),
+    ]);
 
     const totalRevenue = revenueResult[0]?.total || 0;
     const collectedRevenue = revenueResult[0]?.paid || 0;
-
-    const paymentsMtdResult = await paymentsCol
-      .aggregate([
-        { $match: { paymentDate: { $gte: monthStart } } },
-        { $group: { _id: null, total: { $sum: "$amount" } } },
-      ])
-      .toArray()
-      .catch(() => []);
-
     const paymentsMtd = paymentsMtdResult[0]?.total ?? collectedRevenue;
-
-    const recentOrders = await ordersCol.find({}).sort({ createdAt: -1 }).limit(5).toArray();
-
-    const pendingDealerApprovals = await dealersCol
-      .find({ status: "SUBMITTED" })
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
-
-    const pendingOrderApprovals = await ordersCol
-      .find({ status: "PENDING_APPROVAL" })
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
 
     return res.json({
       stats: {
@@ -165,7 +165,7 @@ router.get("/stats", async (_req, res) => {
         totalProducts,
         activeProducts,
         lowStockCount,
-        totalInventorySkus: Array.isArray(inventoryItems) ? inventoryItems.length : 0,
+        totalInventorySkus,
         totalRevenue,
         collectedRevenue,
         outstandingRevenue: totalRevenue - collectedRevenue,
@@ -188,6 +188,10 @@ router.get("/stats", async (_req, res) => {
         orders: pendingOrderApprovals.map((o) => ({
           ...o,
           id: o._id?.toString(),
+        })),
+        creditNotes: pendingCreditNoteApprovals.map((c) => ({
+          ...c,
+          id: c._id?.toString(),
         })),
       },
     });

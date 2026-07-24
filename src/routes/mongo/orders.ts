@@ -1,11 +1,77 @@
 import { Router } from "express";
-import { getDb, Order, Product, Dispatch, ObjectId } from "../../lib/mongodb";
+import { getDb, Order, OrderItem, Product, Dispatch, Invoice, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { findDealerById } from "../../lib/dealer-lookup";
 
 const router = Router();
 
 router.use(requireAuth);
+
+interface OrderItemInput {
+  productId: string;
+  quantity: number;
+  unitPrice?: number;
+  gstRate?: number;
+}
+
+/**
+ * Resolve order line items from product master, snapshotting packaging so the
+ * order (and any generated invoice) carries case/alternate-unit information.
+ */
+async function computeOrderItems(
+  items: OrderItemInput[]
+): Promise<{ orderItems: OrderItem[]; subtotal: number; taxAmount: number }> {
+  const db = await getDb();
+  const productsCol = db.collection<Product>("products");
+
+  const productIds = items
+    .map((i) => i.productId)
+    .filter((id) => ObjectId.isValid(id))
+    .map((id) => new ObjectId(id));
+
+  if (productIds.length !== items.length) {
+    throw new Error("Invalid product ID in items");
+  }
+
+  const products = await productsCol.find({ _id: { $in: productIds } }).toArray();
+  const productMap = new Map(products.map((p) => [p._id!.toString(), p]));
+
+  let subtotal = 0;
+  let taxAmount = 0;
+
+  const orderItems = items.map((item) => {
+    const product = productMap.get(item.productId);
+    if (!product) throw new Error(`Product ${item.productId} not found`);
+
+    const qty = Number(item.quantity);
+    if (!qty || qty <= 0) throw new Error(`Invalid quantity for product ${product.name}`);
+
+    const price = item.unitPrice ?? product.basePrice;
+    const gstRate = item.gstRate ?? product.gstRate;
+    const tax = (qty * price * gstRate) / 100;
+    const total = qty * price + tax;
+
+    subtotal += qty * price;
+    taxAmount += tax;
+
+    return {
+      productId: new ObjectId(item.productId),
+      productName: product.name,
+      productCode: product.productCode,
+      quantity: qty,
+      unitPrice: price,
+      gstRate,
+      taxAmount: tax,
+      totalAmount: total,
+      packingSize: product.packingSize,
+      unitOfMeasure: product.unitOfMeasure,
+      alternateUnit: product.alternateUnit,
+      unitsPerAlternate: product.unitsPerAlternate,
+    } as OrderItem;
+  });
+
+  return { orderItems, subtotal, taxAmount };
+}
 
 async function generateOrderNumber(): Promise<string> {
   const db = await getDb();
@@ -37,7 +103,11 @@ router.get("/", async (req, res) => {
     const ordersCol = db.collection<Order>("orders");
     const dispatchesCol = db.collection<Dispatch>("dispatches");
 
-    const { status, dealerId, q, forLogistics } = req.query;
+    const { status, dealerId, q, forLogistics, limit: limitRaw } = req.query;
+    const limit = Math.min(
+      Math.max(parseInt(String(limitRaw || "500"), 10) || 500, 1),
+      500
+    );
 
     const filter: Record<string, unknown> = {};
 
@@ -58,7 +128,23 @@ router.get("/", async (req, res) => {
       ];
     }
 
-    const orders = await ordersCol.find(filter).sort({ createdAt: -1 }).limit(500).toArray();
+    const orders = await ordersCol.find(filter).sort({ createdAt: -1 }).limit(limit).toArray();
+
+    // Skip dispatch join for lightweight list requests (e.g. dashboard widgets)
+    if (limit <= 10 && forLogistics !== "true") {
+      return res.json(
+        orders.map((o) => ({
+          ...o,
+          id: o._id?.toString(),
+          dealer: {
+            id: o.dealerId?.toString(),
+            firmName: o.dealerName,
+            city: o.dealerCity,
+            businessAddress: o.deliveryAddress,
+          },
+        }))
+      );
+    }
 
     const orderIds = orders.map((o) => o._id!);
     const dispatches = orderIds.length
@@ -121,10 +207,18 @@ router.get("/:id", async (req, res) => {
     }
 
     const dispatch = await dispatchesCol.findOne({ orderId: order._id! });
+    const invoice = await db
+      .collection<Invoice>("invoices")
+      .findOne({ orderId: order._id! }, { projection: { invoiceNumber: 1 } });
 
     return res.json({
       ...order,
       id: order._id?.toString(),
+      invoiceId: invoice?._id?.toString(),
+      invoiceNumber: invoice?.invoiceNumber,
+      invoice: invoice
+        ? { id: invoice._id?.toString(), invoiceNumber: invoice.invoiceNumber }
+        : null,
       dealer: {
         id: order.dealerId?.toString(),
         firmName: order.dealerName,
@@ -162,7 +256,6 @@ router.post(
     try {
       const db = await getDb();
       const ordersCol = db.collection<Order>("orders");
-      const productsCol = db.collection<Product>("products");
 
       const {
         dealerId,
@@ -182,53 +275,7 @@ router.post(
         return res.status(404).json({ error: "Dealer not found" });
       }
 
-      const productIds = items
-        .map((i: { productId: string }) => i.productId)
-        .filter((id: string) => ObjectId.isValid(id))
-        .map((id: string) => new ObjectId(id));
-
-      if (productIds.length !== items.length) {
-        return res.status(400).json({ error: "Invalid product ID in items" });
-      }
-
-      const products = await productsCol.find({ _id: { $in: productIds } }).toArray();
-      const productMap = new Map(products.map((p) => [p._id!.toString(), p]));
-
-      let subtotal = 0;
-      let taxAmount = 0;
-
-      const orderItems = items.map(
-        (item: { productId: string; quantity: number; unitPrice?: number; gstRate?: number }) => {
-          const product = productMap.get(item.productId);
-          if (!product) {
-            throw new Error(`Product ${item.productId} not found`);
-          }
-
-          const qty = Number(item.quantity);
-          if (!qty || qty <= 0) {
-            throw new Error(`Invalid quantity for product ${product.name}`);
-          }
-
-          const price = item.unitPrice ?? product.basePrice;
-          const gstRate = item.gstRate ?? product.gstRate;
-          const tax = (qty * price * gstRate) / 100;
-          const total = qty * price + tax;
-
-          subtotal += qty * price;
-          taxAmount += tax;
-
-          return {
-            productId: new ObjectId(item.productId),
-            productName: product.name,
-            productCode: product.productCode,
-            quantity: qty,
-            unitPrice: price,
-            gstRate,
-            taxAmount: tax,
-            totalAmount: total,
-          };
-        }
-      );
+      const { orderItems, subtotal, taxAmount } = await computeOrderItems(items);
 
       const orderNumber = await generateOrderNumber();
       const orderStatus =
@@ -269,6 +316,58 @@ router.post(
     } catch (error) {
       console.error("Error creating order:", error);
       const message = error instanceof Error ? error.message : "Failed to create order";
+      return res.status(500).json({ error: message });
+    }
+  }
+);
+
+// Admin edits an order (quantities/prices/instructions) before approving it.
+router.patch(
+  "/:id",
+  requireRole("MANAGEMENT_ADMIN"),
+  async (req, res) => {
+    try {
+      const db = await getDb();
+      const ordersCol = db.collection<Order>("orders");
+
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({ error: "Invalid order ID" });
+      }
+
+      const existing = await ordersCol.findOne({ _id: new ObjectId(id) });
+      if (!existing) {
+        return res.status(404).json({ error: "Order not found" });
+      }
+      if (existing.status !== "PENDING_APPROVAL" && existing.status !== "DRAFT") {
+        return res
+          .status(400)
+          .json({ error: "Only draft or pending-approval orders can be edited" });
+      }
+
+      const { items, deliveryAddress, specialInstructions } = req.body;
+      const update: Partial<Order> = { updatedAt: new Date() };
+
+      if (Array.isArray(items) && items.length > 0) {
+        const { orderItems, subtotal, taxAmount } = await computeOrderItems(items);
+        update.items = orderItems;
+        update.subtotal = subtotal;
+        update.taxAmount = taxAmount;
+        update.totalAmount = subtotal + taxAmount;
+      }
+      if (deliveryAddress !== undefined) update.deliveryAddress = deliveryAddress;
+      if (specialInstructions !== undefined) update.specialInstructions = specialInstructions;
+
+      const result = await ordersCol.findOneAndUpdate(
+        { _id: new ObjectId(id) },
+        { $set: update },
+        { returnDocument: "after" }
+      );
+
+      return res.json({ ...result, id: result?._id?.toString() });
+    } catch (error) {
+      console.error("Error updating order:", error);
+      const message = error instanceof Error ? error.message : "Failed to update order";
       return res.status(500).json({ error: message });
     }
   }
