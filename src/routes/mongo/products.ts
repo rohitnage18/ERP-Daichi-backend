@@ -125,7 +125,33 @@ router.post(
       const categoriesCol = db.collection<ProductCategory>("productCategories");
       
       const { categoryId, ...productData } = req.body;
+
+      const productCode = typeof productData.productCode === "string" ? productData.productCode.trim() : "";
+      const name = typeof productData.name === "string" ? productData.name.trim() : "";
+      if (!productCode) {
+        return res.status(400).json({ error: "Product code is required." });
+      }
+      if (!name) {
+        return res.status(400).json({ error: "Product name is required." });
+      }
+      productData.productCode = productCode;
+      productData.name = name;
+
       normalizePackaging(productData);
+
+      if (!Number.isFinite(productData.basePrice as number)) {
+        return res.status(400).json({ error: "Base price must be a valid number." });
+      }
+      if (!Number.isFinite(productData.gstRate as number)) {
+        return res.status(400).json({ error: "GST rate must be a valid number." });
+      }
+
+      const existing = await productsCol.findOne({ productCode });
+      if (existing) {
+        return res
+          .status(409)
+          .json({ error: `A product with code "${productCode}" already exists.` });
+      }
       
       let category;
       if (categoryId && ObjectId.isValid(categoryId)) {
@@ -150,6 +176,11 @@ router.post(
       });
     } catch (error) {
       console.error("Error creating product:", error);
+      if ((error as { code?: number }).code === 11000) {
+        return res
+          .status(409)
+          .json({ error: "A product with this code already exists." });
+      }
       return res.status(500).json({ error: "Failed to create product" });
     }
   }
