@@ -7,34 +7,68 @@ import { amountToWords, getStateCodeFromGSTIN, getStateNameFromCode, getUQCCode 
 
 /**
  * Resolve lotSize / Units-per-Case for an invoice line from the product master.
- * Prefer an explicit lotSize from the request; otherwise build from packingSize
- * + unitsPerAlternate so the printed invoice can show "(N Case)".
+ * Supports modern ("1 L * 6 unit") and legacy ("100 Btl" / "100 Pcs") lotSize formats.
  */
+function parseLegacyUnits(lotSize?: string): { units?: number; alternateUnit?: string } {
+  if (!lotSize) return {};
+  const packed = lotSize.match(
+    /^(\d+)\s*(Btl|Bottles?|Pcs|Pieces?|Bags?|Nos|Case|Box|unit|units)\b/i
+  );
+  if (!packed) return {};
+  const units = parseInt(packed[1], 10);
+  let alternateUnit = packed[2];
+  if (/^bottles?$/i.test(alternateUnit)) alternateUnit = "Btl";
+  else if (/^pieces?$/i.test(alternateUnit)) alternateUnit = "Pcs";
+  else if (/^bags?$/i.test(alternateUnit)) alternateUnit = "Bag";
+  else if (/^units?$/i.test(alternateUnit)) alternateUnit = "Nos";
+  return { units, alternateUnit };
+}
+
 function resolveProductLotSize(
   product: Product,
-  overrideLotSize?: string
-): { lotSize: string; unitsPerAlternate?: number; alternateUnit?: string } {
-  const units = Number(product.unitsPerAlternate);
+  overrideLotSize?: string,
+  overrideUnits?: number
+): { lotSize: string; unitsPerAlternate?: number; alternateUnit?: string; unitOfMeasure: string } {
+  const legacy = parseLegacyUnits(product.lotSize);
+  const explicitUnits = Number(overrideUnits ?? product.unitsPerAlternate);
+  const units =
+    Number.isFinite(explicitUnits) && explicitUnits > 0
+      ? explicitUnits
+      : legacy.units;
   const packing = (product.packingSize || "").trim();
+  const alternateUnit =
+    product.alternateUnit || legacy.alternateUnit || undefined;
   const override = overrideLotSize?.trim();
-  if (override) {
+
+  // "per" column unit: prefer bottle/piece style alternate, else product UOM
+  const unitOfMeasure = alternateUnit || product.unitOfMeasure || "Nos";
+
+  if (override && !(Number.isFinite(explicitUnits) && explicitUnits > 0)) {
     return {
       lotSize: override,
-      unitsPerAlternate: Number.isFinite(units) && units > 0 ? units : undefined,
-      alternateUnit: product.alternateUnit,
-    };
-  }
-  if (packing && Number.isFinite(units) && units > 0) {
-    return {
-      lotSize: `${packing} * ${units} unit`,
       unitsPerAlternate: units,
-      alternateUnit: product.alternateUnit || "Case",
+      alternateUnit,
+      unitOfMeasure,
     };
   }
+
+  if (units && units > 0) {
+    const lotSize = packing
+      ? `${packing} * ${units} unit`
+      : `${units} ${alternateUnit || "Case"}`;
+    return {
+      lotSize,
+      unitsPerAlternate: units,
+      alternateUnit: alternateUnit || "Case",
+      unitOfMeasure,
+    };
+  }
+
   return {
     lotSize: product.lotSize || "",
-    unitsPerAlternate: Number.isFinite(units) && units > 0 ? units : undefined,
-    alternateUnit: product.alternateUnit,
+    unitsPerAlternate: undefined,
+    alternateUnit,
+    unitOfMeasure,
   };
 }
 
@@ -388,7 +422,11 @@ async function buildInvoiceDoc(
         totalSgst += sgstAmount;
         totalIgst += igstAmount;
         
-        const packaging = resolveProductLotSize(product, item.lotSize);
+        const packaging = resolveProductLotSize(
+          product,
+          item.lotSize,
+          item.unitsPerAlternate
+        );
 
         return {
           productId: new ObjectId(item.productId),
@@ -400,8 +438,8 @@ async function buildInvoiceDoc(
           lotSize: packaging.lotSize,
           unitsPerAlternate: packaging.unitsPerAlternate,
           alternateUnit: packaging.alternateUnit,
-          unitOfMeasure: "Nos",
-          uqc: getUQCCode(product.unitOfMeasure || ""),
+          unitOfMeasure: packaging.unitOfMeasure,
+          uqc: getUQCCode(packaging.unitOfMeasure || product.unitOfMeasure || ""),
           mrp: product.mrp || product.basePrice,
           quantity: qty,
           unitPrice: price,
