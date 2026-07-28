@@ -495,7 +495,11 @@ export interface InvoiceItem {
   hsnCode?: string;
   description?: string;
   packingSize?: string;
+  /** e.g. "1 L * 6 unit" — used to show case count on the tax invoice */
   lotSize?: string;
+  /** Base units in one Case/Box/Bag (Units per Case). */
+  unitsPerAlternate?: number;
+  alternateUnit?: string;
   unitOfMeasure?: string;
   uqc?: string;
   mrp?: number;

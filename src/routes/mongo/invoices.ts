@@ -5,6 +5,39 @@ import { requireAuth, requireRole } from "../../middleware/auth";
 import { sendEmail } from "../../lib/email";
 import { amountToWords, getStateCodeFromGSTIN, getStateNameFromCode, getUQCCode } from "../../lib/utils";
 
+/**
+ * Resolve lotSize / Units-per-Case for an invoice line from the product master.
+ * Prefer an explicit lotSize from the request; otherwise build from packingSize
+ * + unitsPerAlternate so the printed invoice can show "(N Case)".
+ */
+function resolveProductLotSize(
+  product: Product,
+  overrideLotSize?: string
+): { lotSize: string; unitsPerAlternate?: number; alternateUnit?: string } {
+  const units = Number(product.unitsPerAlternate);
+  const packing = (product.packingSize || "").trim();
+  const override = overrideLotSize?.trim();
+  if (override) {
+    return {
+      lotSize: override,
+      unitsPerAlternate: Number.isFinite(units) && units > 0 ? units : undefined,
+      alternateUnit: product.alternateUnit,
+    };
+  }
+  if (packing && Number.isFinite(units) && units > 0) {
+    return {
+      lotSize: `${packing} * ${units} unit`,
+      unitsPerAlternate: units,
+      alternateUnit: product.alternateUnit || "Case",
+    };
+  }
+  return {
+    lotSize: product.lotSize || "",
+    unitsPerAlternate: Number.isFinite(units) && units > 0 ? units : undefined,
+    alternateUnit: product.alternateUnit,
+  };
+}
+
 const SUPPLIER_DETAILS = {
   name: "Daichi International",
   gstin: "27AAXFD5184H1ZT",
@@ -187,6 +220,8 @@ router.get("/:id", async (req, res) => {
           hsnCode: item.hsnCode,
           lotSize: item.lotSize,
           packingSize: item.packingSize,
+          unitsPerAlternate: item.unitsPerAlternate,
+          alternateUnit: item.alternateUnit,
         },
       })),
       createdBy: {
@@ -203,6 +238,7 @@ interface InvoiceItemInput {
   productId: string;
   description?: string;
   lotSize?: string;
+  unitsPerAlternate?: number;
   quantity: number;
   unitPrice: number;
   discount?: number;
@@ -226,11 +262,6 @@ interface CreateInvoiceBody {
   shippingStateCode?: string;
   shippingPincode?: string;
   shippingGstn?: string;
-  transportMode?: string;
-  vehicleNumber?: string;
-  eWayBillNumber?: string;
-  eWayBillDate?: string;
-  freightCharges?: number;
   termsAndConditions?: string;
   bankDetails?: string;
   remarks?: string;
@@ -357,6 +388,8 @@ async function buildInvoiceDoc(
         totalSgst += sgstAmount;
         totalIgst += igstAmount;
         
+        const packaging = resolveProductLotSize(product, item.lotSize);
+
         return {
           productId: new ObjectId(item.productId),
           productName: product.name,
@@ -364,7 +397,9 @@ async function buildInvoiceDoc(
           hsnCode: product.hsnCode ?? "",
           description: item.description ?? product.name,
           packingSize: product.packingSize || "",
-          lotSize: item.lotSize?.trim() || product.lotSize || "",
+          lotSize: packaging.lotSize,
+          unitsPerAlternate: packaging.unitsPerAlternate,
+          alternateUnit: packaging.alternateUnit,
           unitOfMeasure: "Nos",
           uqc: getUQCCode(product.unitOfMeasure || ""),
           mrp: product.mrp || product.basePrice,
@@ -383,8 +418,9 @@ async function buildInvoiceDoc(
       });
       
       const totalTax = totalCgst + totalSgst + totalIgst;
-      const freightCharges = body.freightCharges ?? 0;
-      const rawTotal = subtotal + totalTax + freightCharges;
+      // Product invoice only — freight / transport is handled by a separate
+      // 3rd-party logistics invoice, so do not include freightCharges here.
+      const rawTotal = subtotal + totalTax;
       const roundedTotal = Math.round(rawTotal);
       const roundOff = Math.round((roundedTotal - rawTotal) * 100) / 100;
       const totalAmount = roundedTotal;
@@ -429,7 +465,6 @@ async function buildInvoiceDoc(
         sgstAmount: totalSgst,
         igstAmount: totalIgst,
         totalTax,
-        freightCharges: freightCharges || undefined,
         roundOff: roundOff !== 0 ? roundOff : undefined,
         totalAmount,
         totalAmountInWords: amountToWords(totalAmount),
@@ -451,11 +486,6 @@ async function buildInvoiceDoc(
         shippingStateCode: body.shippingStateCode || dealerStateCode,
         shippingPincode: body.shippingPincode ?? dealerPincode,
         shippingGstn: body.shippingGstn ?? dealerGst,
-        
-        transportMode: body.transportMode,
-        vehicleNumber: body.vehicleNumber,
-        eWayBillNumber: body.eWayBillNumber,
-        eWayBillDate: body.eWayBillDate ? new Date(body.eWayBillDate) : undefined,
         
         bankName: SUPPLIER_DETAILS.bankName,
         bankAccountNo: SUPPLIER_DETAILS.bankAccountNo,
@@ -549,11 +579,21 @@ router.post(
         orderId: order._id!.toString(),
         orderNumber: order.orderNumber,
         dueDate: dueDate.toISOString(),
-        items: order.items.map((it) => ({
-          productId: it.productId.toString(),
-          quantity: it.quantity,
-          unitPrice: it.unitPrice,
-        })),
+        items: order.items.map((it) => {
+          const units = Number(it.unitsPerAlternate);
+          const packing = (it.packingSize || "").trim();
+          const lotSize =
+            packing && Number.isFinite(units) && units > 0
+              ? `${packing} * ${units} unit`
+              : undefined;
+          return {
+            productId: it.productId.toString(),
+            quantity: it.quantity,
+            unitPrice: it.unitPrice,
+            lotSize,
+            unitsPerAlternate: Number.isFinite(units) && units > 0 ? units : undefined,
+          };
+        }),
       };
 
       const invoice = await buildInvoiceDoc(db, body, req.user!.id, req.user!.email);
@@ -596,10 +636,6 @@ router.patch(
         "shippingState",
         "shippingPincode",
         "shippingGstn",
-        "transportMode",
-        "vehicleNumber",
-        "eWayBillNumber",
-        "eWayBillDate",
         "irnNumber",
         "irnDate",
         "termsAndConditions",
@@ -610,7 +646,7 @@ router.patch(
       
       for (const field of allowedFields) {
         if (req.body[field] !== undefined) {
-          if (field === "eWayBillDate" || field === "irnDate") {
+          if (field === "irnDate") {
             updateData[field] = req.body[field] ? new Date(req.body[field]) : null;
           } else {
             updateData[field] = req.body[field];
