@@ -24,6 +24,28 @@ interface EmailLogDoc {
   createdAt: Date;
 }
 
+type EmailProvider = "resend" | "smtp" | "none";
+
+/**
+ * Pick the delivery provider. Resend uses HTTPS (port 443) so it works on
+ * hosts that block outbound SMTP ports (e.g. Render's free tier). SMTP is kept
+ * as a fallback for local development where Gmail SMTP is reachable.
+ */
+export function getEmailProvider(): EmailProvider {
+  if (process.env.RESEND_API_KEY) return "resend";
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) return "smtp";
+  return "none";
+}
+
+export function isEmailConfigured(): boolean {
+  return getEmailProvider() !== "none";
+}
+
+/** Backwards-compatible alias used by existing callers. */
+export function isSmtpConfigured(): boolean {
+  return isEmailConfigured();
+}
+
 function getTransport() {
   const host = process.env.SMTP_HOST;
   const port = Number(process.env.SMTP_PORT || 587);
@@ -42,12 +64,34 @@ function getTransport() {
   });
 }
 
-export function isSmtpConfigured(): boolean {
-  return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+async function sendViaResend(from: string, input: SendEmailInput): Promise<void> {
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: input.to,
+      cc: input.cc || undefined,
+      subject: input.subject,
+      html: input.html,
+    }),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Resend API ${res.status}: ${detail || res.statusText}`);
+  }
 }
 
 export async function sendEmail(input: SendEmailInput) {
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@daichi.local";
+  const from =
+    process.env.RESEND_FROM ||
+    process.env.SMTP_FROM ||
+    process.env.SMTP_USER ||
+    "noreply@daichi.local";
   const db = await getDb();
   const emailLogsCol = db.collection<EmailLogDoc>("emailLogs");
 
@@ -66,16 +110,17 @@ export async function sendEmail(input: SendEmailInput) {
   const insertResult = await emailLogsCol.insertOne(logDoc);
   const logId = insertResult.insertedId;
 
-  const transport = getTransport();
+  const provider = getEmailProvider();
 
-  if (!transport) {
+  if (provider === "none") {
     await emailLogsCol.updateOne(
       { _id: logId },
       {
         $set: {
           status: "SIMULATED",
           sentAt: new Date(),
-          error: "SMTP not configured — saved to email log only (set SMTP_* in .env)",
+          error:
+            "Email not configured — saved to log only (set RESEND_API_KEY, or SMTP_* for local dev)",
         },
       }
     );
@@ -83,13 +128,18 @@ export async function sendEmail(input: SendEmailInput) {
   }
 
   try {
-    await transport.sendMail({
-      from,
-      to: input.to,
-      cc: input.cc || undefined,
-      subject: input.subject,
-      html: input.html,
-    });
+    if (provider === "resend") {
+      await sendViaResend(from, input);
+    } else {
+      const transport = getTransport()!;
+      await transport.sendMail({
+        from,
+        to: input.to,
+        cc: input.cc || undefined,
+        subject: input.subject,
+        html: input.html,
+      });
+    }
     await emailLogsCol.updateOne(
       { _id: logId },
       { $set: { status: "SENT", sentAt: new Date() } }

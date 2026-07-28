@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { hash } from "bcryptjs";
 import { getDb, User } from "../../lib/mongodb";
-import { sendEmail, isSmtpConfigured } from "../../lib/email";
+import { sendEmail, isEmailConfigured, getEmailProvider } from "../../lib/email";
 import { requireAuth, requireRole } from "../../middleware/auth";
 
 const router = Router();
@@ -9,9 +9,16 @@ const router = Router();
 router.use(requireAuth);
 
 router.get("/status", requireRole("MANAGEMENT_ADMIN"), async (_req, res) => {
+  const provider = getEmailProvider();
   return res.json({
-    smtpConfigured: isSmtpConfigured(),
-    from: process.env.SMTP_FROM || process.env.SMTP_USER || null,
+    emailConfigured: isEmailConfigured(),
+    smtpConfigured: isEmailConfigured(),
+    provider,
+    from:
+      process.env.RESEND_FROM ||
+      process.env.SMTP_FROM ||
+      process.env.SMTP_USER ||
+      null,
   });
 });
 
