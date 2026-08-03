@@ -296,6 +296,8 @@ interface CreateInvoiceBody {
   shippingStateCode?: string;
   shippingPincode?: string;
   shippingGstn?: string;
+  /** Positive amount deducted as "Less : Freight Charges" (Tally style). */
+  freightCharges?: number;
   termsAndConditions?: string;
   bankDetails?: string;
   remarks?: string;
@@ -456,9 +458,9 @@ async function buildInvoiceDoc(
       });
       
       const totalTax = totalCgst + totalSgst + totalIgst;
-      // Product invoice only — freight / transport is handled by a separate
-      // 3rd-party logistics invoice, so do not include freightCharges here.
-      const rawTotal = subtotal + totalTax;
+      // Tally-style: freight is an optional deduction ("Less : Freight Charges").
+      const freightCharges = Math.max(0, Number(body.freightCharges) || 0);
+      const rawTotal = subtotal + totalTax - freightCharges;
       const roundedTotal = Math.round(rawTotal);
       const roundOff = Math.round((roundedTotal - rawTotal) * 100) / 100;
       const totalAmount = roundedTotal;
@@ -503,6 +505,7 @@ async function buildInvoiceDoc(
         sgstAmount: totalSgst,
         igstAmount: totalIgst,
         totalTax,
+        freightCharges: freightCharges > 0 ? freightCharges : undefined,
         roundOff: roundOff !== 0 ? roundOff : undefined,
         totalAmount,
         totalAmountInWords: amountToWords(totalAmount),
@@ -831,7 +834,7 @@ router.post(
         simulated: result.simulated,
         logId: result.logId,
         message: result.simulated
-          ? "Email saved to log (configure SMTP in backend .env to send real emails)"
+          ? "Email saved to log only — set RESEND_API_KEY (recommended) or SMTP_* in backend .env to send real emails"
           : "Invoice email sent successfully",
       });
     } catch (error) {

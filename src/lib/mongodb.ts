@@ -714,6 +714,26 @@ export interface DaichiDealerDocumentMeta {
   size?: number;
   storageKey?: string;
   s3Key?: string;
+  /** True when uploaded in ERP (missing from original dealer form). */
+  uploadedLocally?: boolean;
+  uploadedAt?: Date;
+  uploadedById?: string;
+  uploadedByName?: string;
+}
+
+/** Binary file payload for locally uploaded dealer documents. */
+export interface DealerDocumentFile {
+  _id?: ObjectId;
+  dealerExternalId: string;
+  docType: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  /** Base64-encoded file contents (kept under ~8MB). */
+  dataBase64: string;
+  uploadedAt: Date;
+  uploadedById?: string;
+  uploadedByName?: string;
 }
 
 export interface DaichiDealerSyncLog {

@@ -1,11 +1,27 @@
 import { Router } from "express";
-import { getDb, DaichiDealer, DaichiDealerSyncLog, ObjectId } from "../lib/mongodb";
+import {
+  getDb,
+  DaichiDealer,
+  DaichiDealerSyncLog,
+  DealerDocumentFile,
+  ObjectId,
+} from "../lib/mongodb";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { getDaichiAdminToken, syncDaichiDealersNow, syncInFlight, triggerBackgroundDealerSync, getRemoteDealerCount } from "../lib/daichi-sync-mongo";
 
 const router = Router();
 
 router.use(requireAuth);
+
+const REQUIRED_DOC_TYPES = [
+  "panCard",
+  "aadharCard",
+  "gstCertificate",
+  "blankCheque",
+  "fertilizerLicense",
+] as const;
+
+const MAX_DOC_BYTES = 8 * 1024 * 1024; // 8 MB
 
 let lastSyncResult: {
   startedAt: string;
@@ -102,6 +118,25 @@ async function resolveDocumentPreviewUrl(
   authToken?: string
 ): Promise<{ url: string; mimeType: string; fileName: string } | null> {
   const sourceDocType = resolveSourceDocType(docType);
+
+  // Prefer locally uploaded ERP documents
+  try {
+    const db = await getDb();
+    const local = await db.collection<DealerDocumentFile>("dealerDocumentFiles").findOne({
+      dealerExternalId: externalId,
+      docType: sourceDocType,
+    });
+    if (local?.dataBase64) {
+      return {
+        url: `data:${local.mimeType || "application/octet-stream"};base64,${local.dataBase64}`,
+        mimeType: local.mimeType || "application/octet-stream",
+        fileName: local.fileName || `${sourceDocType}.bin`,
+      };
+    }
+  } catch {
+    // fall through to remote source
+  }
+
   const cacheKey = `${externalId}:${sourceDocType}`;
 
   const cached = getCachedDocUrl(cacheKey);
@@ -419,9 +454,26 @@ router.get("/:externalId/documents/preview-urls", async (req, res) => {
 
 router.get("/:externalId/documents/:docType/download", async (req, res) => {
   try {
+    const db = await getDb();
+    const filesCol = db.collection<DealerDocumentFile>("dealerDocumentFiles");
+    const local = await filesCol.findOne({
+      dealerExternalId: req.params.externalId,
+      docType: resolveSourceDocType(req.params.docType),
+    });
+
+    if (local?.dataBase64) {
+      const buffer = Buffer.from(local.dataBase64, "base64");
+      res.setHeader("Content-Type", local.mimeType || "application/octet-stream");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${local.fileName || `${req.params.docType}.bin`}"`
+      );
+      return res.send(buffer);
+    }
+
     const baseUrl = (process.env.DAICHI_API_BASE_URL || "").replace(/\/+$/, "");
     if (!baseUrl) {
-      return res.status(500).json({ error: "DAICHI_API_BASE_URL is not set" });
+      return res.status(404).json({ error: "Document not found" });
     }
 
     const sourceDocType = resolveSourceDocType(req.params.docType);
@@ -499,6 +551,115 @@ router.get("/:externalId/documents/:docType/download", async (req, res) => {
     return res.status(500).json({ error: "Failed to download document" });
   }
 });
+
+/** Upload a missing dealer document into ERP (when not present on dealer form). */
+router.post(
+  "/:externalId/documents/:docType/upload",
+  requireRole("MANAGEMENT_ADMIN", "SALES_MARKETING", "ACCOUNT"),
+  async (req, res) => {
+    try {
+      const { externalId, docType: rawDocType } = req.params;
+      const docType = resolveSourceDocType(rawDocType);
+      if (!REQUIRED_DOC_TYPES.includes(docType as (typeof REQUIRED_DOC_TYPES)[number])) {
+        return res.status(400).json({
+          error: `Invalid docType. Allowed: ${REQUIRED_DOC_TYPES.join(", ")}`,
+        });
+      }
+
+      const { fileName, mimeType, dataBase64 } = req.body as {
+        fileName?: string;
+        mimeType?: string;
+        dataBase64?: string;
+      };
+
+      if (!fileName?.trim() || !dataBase64?.trim()) {
+        return res.status(400).json({ error: "fileName and dataBase64 are required" });
+      }
+
+      const cleaned = dataBase64.replace(/^data:[^;]+;base64,/, "");
+      let buffer: Buffer;
+      try {
+        buffer = Buffer.from(cleaned, "base64");
+      } catch {
+        return res.status(400).json({ error: "Invalid base64 file data" });
+      }
+
+      if (!buffer.length) {
+        return res.status(400).json({ error: "Empty file" });
+      }
+      if (buffer.length > MAX_DOC_BYTES) {
+        return res.status(400).json({ error: "File too large (max 8 MB)" });
+      }
+
+      const db = await getDb();
+      const dealersCol = db.collection<DaichiDealer>("daichiDealers");
+      const filesCol = db.collection<DealerDocumentFile>("dealerDocumentFiles");
+
+      const dealer = await dealersCol.findOne({ externalId });
+      if (!dealer) {
+        return res.status(404).json({ error: "Dealer not found" });
+      }
+
+      const resolvedMime = mimeType || "application/octet-stream";
+      const now = new Date();
+
+      await filesCol.updateOne(
+        { dealerExternalId: externalId, docType },
+        {
+          $set: {
+            dealerExternalId: externalId,
+            docType,
+            fileName: fileName.trim(),
+            mimeType: resolvedMime,
+            size: buffer.length,
+            dataBase64: cleaned,
+            uploadedAt: now,
+            uploadedById: req.user!.id,
+            uploadedByName: req.user!.email,
+          },
+        },
+        { upsert: true }
+      );
+
+      const meta = {
+        docType,
+        fileName: fileName.trim(),
+        mimeType: resolvedMime,
+        size: buffer.length,
+        uploadedLocally: true,
+        uploadedAt: now,
+        uploadedById: req.user!.id,
+        uploadedByName: req.user!.email,
+      };
+
+      const existingDocs = dealer.documents || [];
+      const idx = existingDocs.findIndex(
+        (d) => resolveSourceDocType(d.docType) === docType || d.docType === docType
+      );
+      if (idx >= 0) {
+        existingDocs[idx] = { ...existingDocs[idx], ...meta };
+      } else {
+        existingDocs.push(meta);
+      }
+
+      await dealersCol.updateOne(
+        { _id: dealer._id },
+        { $set: { documents: existingDocs, updatedAt: now } }
+      );
+
+      return res.status(201).json({
+        ok: true,
+        document: {
+          id: docType,
+          ...meta,
+        },
+      });
+    } catch (error) {
+      console.error("Dealer document upload error:", error);
+      return res.status(500).json({ error: "Failed to upload document" });
+    }
+  }
+);
 
 // Get preview URL (returns presigned URL for client-side preview)
 router.get("/:externalId/documents/:docType/preview-url", async (req, res) => {
