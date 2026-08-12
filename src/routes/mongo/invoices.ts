@@ -1,4 +1,5 @@
 import { Router } from "express";
+import crypto from "crypto";
 import { Db } from "mongodb";
 import { getDb, Invoice, Order, Dealer, Product, DaichiDealer, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
@@ -7,21 +8,40 @@ import { amountToWords, getStateCodeFromGSTIN, getStateNameFromCode, getUQCCode 
 
 /**
  * Resolve lotSize / Units-per-Case for an invoice line from the product master.
- * Supports modern ("1 L * 6 unit") and legacy ("100 Btl" / "100 Pcs") lotSize formats.
+ * Supports modern ("5Kg*3 unit=15 kg") and legacy ("100 Btl" / "100 Pcs") formats.
  */
-function parseLegacyUnits(lotSize?: string): { units?: number; alternateUnit?: string } {
+function parseUnitsFromLotSize(lotSize?: string): { units?: number; alternateUnit?: string } {
   if (!lotSize) return {};
-  const packed = lotSize.match(
-    /^(\d+)\s*(Btl|Bottles?|Pcs|Pieces?|Bags?|Nos|Case|Box|unit|units)\b/i
-  );
-  if (!packed) return {};
-  const units = parseInt(packed[1], 10);
-  let alternateUnit = packed[2];
-  if (/^bottles?$/i.test(alternateUnit)) alternateUnit = "Btl";
-  else if (/^pieces?$/i.test(alternateUnit)) alternateUnit = "Pcs";
-  else if (/^bags?$/i.test(alternateUnit)) alternateUnit = "Bag";
-  else if (/^units?$/i.test(alternateUnit)) alternateUnit = "Nos";
-  return { units, alternateUnit };
+  const modern = lotSize.match(/\*\s*(\d+)\s*unit/i) || lotSize.match(/\*\s*(\d+)\s*=/i);
+  if (modern) {
+    return { units: parseInt(modern[1], 10), alternateUnit: "Case" };
+  }
+  // Legacy "100 Pcs" / "50 Bags" is warehouse stock — not units-per-case.
+  return {};
+}
+
+function buildLotSizeString(packing: string, units: number, existingLotSize?: string): string {
+  const size = packing.trim();
+  if (!size) return existingLotSize || `${units} unit`;
+  const pack = size.match(/^([\d.]+)\s*(kg|g|gm|ml|l|lit|ltr)?/i);
+  if (pack) {
+    const value = parseFloat(pack[1]);
+    let unit = (pack[2] || "").toLowerCase();
+    if (unit === "g") unit = "gm";
+    if (unit === "l" || unit === "ltr") unit = "lit";
+    let total = value * units;
+    let totalUnit = unit;
+    if ((unit === "gm" || unit === "g") && total >= 1000 && total % 1000 === 0) {
+      total = total / 1000;
+      totalUnit = "kg";
+    } else if (unit === "ml" && total >= 1000 && total % 1000 === 0) {
+      total = total / 1000;
+      totalUnit = "lit";
+    }
+    const totalPart = totalUnit ? `=${Number.isInteger(total) ? total : Math.round(total * 1000) / 1000} ${totalUnit}` : "";
+    return `${size}*${units} unit${totalPart}`;
+  }
+  return `${size}*${units} unit`;
 }
 
 function resolveProductLotSize(
@@ -29,33 +49,48 @@ function resolveProductLotSize(
   overrideLotSize?: string,
   overrideUnits?: number
 ): { lotSize: string; unitsPerAlternate?: number; alternateUnit?: string; unitOfMeasure: string } {
-  const legacy = parseLegacyUnits(product.lotSize);
+  const parsed = parseUnitsFromLotSize(overrideLotSize || product.lotSize);
+  const fromLot = parsed.units;
   const explicitUnits = Number(overrideUnits ?? product.unitsPerAlternate);
+  const legacyStock = /^\d+\s*(Btl|Bottles?|Pcs|Pieces?|Bags?|Nos|Pkt|Cans?)\b/i.test(
+    product.lotSize || ""
+  );
   const units =
-    Number.isFinite(explicitUnits) && explicitUnits > 0
-      ? explicitUnits
-      : legacy.units;
+    fromLot && fromLot > 0
+      ? fromLot
+      : Number.isFinite(explicitUnits) && explicitUnits > 0 && !legacyStock
+        ? explicitUnits
+        : Number.isFinite(Number(overrideUnits)) && Number(overrideUnits) > 0
+          ? Number(overrideUnits)
+          : legacyStock
+            ? 1
+            : undefined;
   const packing = (product.packingSize || "").trim();
   const alternateUnit =
-    product.alternateUnit || legacy.alternateUnit || undefined;
+    parsed.alternateUnit || product.alternateUnit || undefined;
   const override = overrideLotSize?.trim();
 
-  // "per" column unit: prefer bottle/piece style alternate, else product UOM
-  const unitOfMeasure = alternateUnit || product.unitOfMeasure || "Nos";
+  const unitOfMeasure =
+    (product.unitOfMeasure && !/^case$/i.test(product.unitOfMeasure)
+      ? product.unitOfMeasure
+      : null) || "Nos";
 
-  if (override && !(Number.isFinite(explicitUnits) && explicitUnits > 0)) {
+  if (override && fromLot && !(Number.isFinite(Number(overrideUnits)) && Number(overrideUnits) > 0)) {
     return {
       lotSize: override,
-      unitsPerAlternate: units,
-      alternateUnit,
+      unitsPerAlternate: fromLot,
+      alternateUnit: alternateUnit || "Case",
       unitOfMeasure,
     };
   }
 
   if (units && units > 0) {
-    const lotSize = packing
-      ? `${packing} * ${units} unit`
-      : `${units} ${alternateUnit || "Case"}`;
+    const lotSize =
+      override && (override.includes("unit") || override.includes("="))
+        ? override
+        : product.lotSize && parseUnitsFromLotSize(product.lotSize).units
+          ? product.lotSize
+          : buildLotSizeString(packing, units, product.lotSize);
     return {
       lotSize,
       unitsPerAlternate: units,
@@ -66,8 +101,8 @@ function resolveProductLotSize(
 
   return {
     lotSize: product.lotSize || "",
-    unitsPerAlternate: undefined,
-    alternateUnit,
+    unitsPerAlternate: 1,
+    alternateUnit: alternateUnit || "Case",
     unitOfMeasure,
   };
 }
@@ -91,6 +126,30 @@ const SUPPLIER_DETAILS = {
 };
 
 const router = Router();
+
+/** Public invoice view for emailed share links (no auth). */
+router.get("/public/:token", async (req, res) => {
+  try {
+    const token = String(req.params.token || "").trim();
+    if (!token || token.length < 16) {
+      return res.status(400).json({ error: "Invalid share token" });
+    }
+    const db = await getDb();
+    const invoice = await db.collection<Invoice>("invoices").findOne({ shareToken: token });
+    if (!invoice) {
+      return res.status(404).json({ error: "Invoice not found" });
+    }
+    return res.json({
+      ...invoice,
+      id: invoice._id?.toString(),
+      _id: undefined,
+      shareToken: undefined,
+    });
+  } catch (error) {
+    console.error("Public invoice fetch error:", error);
+    return res.status(500).json({ error: "Failed to fetch invoice" });
+  }
+});
 
 router.use(requireAuth);
 
@@ -781,7 +840,15 @@ router.post(
       }
 
       const appUrl = process.env.FRONTEND_URL || process.env.NEXTAUTH_URL || "http://localhost:3000";
-      const printUrl = `${appUrl}/print/invoices/${id}`;
+      let shareToken = invoice.shareToken;
+      if (!shareToken) {
+        shareToken = crypto.randomBytes(24).toString("hex");
+        await invoicesCol.updateOne(
+          { _id: invoice._id },
+          { $set: { shareToken, updatedAt: new Date() } }
+        );
+      }
+      const printUrl = `${appUrl.replace(/\/$/, "")}/view/invoice/${shareToken}`;
       const dealerLabel = invoice.dealerName || "Customer";
       const amount = new Intl.NumberFormat("en-IN", {
         style: "currency",
@@ -798,7 +865,7 @@ router.post(
           <h2 style="color: #1e40af; margin-bottom: 8px;">Tax Invoice from Daichi International</h2>
           <p>Dear ${dealerLabel},</p>
           ${customMessage}
-          <p>Please find your tax invoice details below:</p>
+          <p>Please find your tax invoice details below. Use the button to view and print:</p>
           <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
             <tr><td style="padding: 6px 0;"><strong>Invoice No.</strong></td><td>${invoice.invoiceNumber}</td></tr>
             <tr><td style="padding: 6px 0;"><strong>Date</strong></td><td>${new Date(invoice.invoiceDate).toLocaleDateString("en-IN")}</td></tr>
@@ -833,6 +900,7 @@ router.post(
         ok: true,
         simulated: result.simulated,
         logId: result.logId,
+        shareUrl: printUrl,
         message: result.simulated
           ? "Email saved to log only — set RESEND_API_KEY (recommended) or SMTP_* in backend .env to send real emails"
           : "Invoice email sent successfully",

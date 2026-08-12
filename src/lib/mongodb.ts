@@ -484,6 +484,8 @@ export interface Invoice {
   
   createdById: ObjectId;
   createdByName?: string;
+  /** Opaque token for public View/Print email links. */
+  shareToken?: string;
   createdAt: Date;
   updatedAt: Date;
 }

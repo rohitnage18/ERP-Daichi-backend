@@ -120,6 +120,111 @@ router.get("/aging", requireRole("MANAGEMENT_ADMIN"), async (_req, res) => {
   }
 });
 
+/** Top products & dealers performance from finalized invoices. */
+router.get("/analytics", requireRole("MANAGEMENT_ADMIN", "ACCOUNT"), async (req, res) => {
+  try {
+    const monthParam = req.query.month as string | undefined;
+    const month = monthParam ? new Date(monthParam) : new Date();
+    const { from, to } = monthRange(month);
+    const limit = Math.min(50, Math.max(5, parseInt(String(req.query.limit || "10"), 10) || 10));
+
+    const db = await getDb();
+    const invoicesCol = db.collection<Invoice>("invoices");
+
+    const match = {
+      invoiceDate: { $gte: from, $lte: to },
+      status: { $nin: ["DRAFT", "CANCELLED"] },
+    };
+
+    const [topProducts, topDealers, totals] = await Promise.all([
+      invoicesCol
+        .aggregate([
+          { $match: match },
+          { $unwind: "$items" },
+          {
+            $group: {
+              _id: {
+                productId: "$items.productId",
+                name: "$items.productName",
+                code: "$items.productCode",
+              },
+              quantity: { $sum: "$items.quantity" },
+              revenue: { $sum: "$items.totalAmount" },
+              invoices: { $addToSet: "$_id" },
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              productId: { $toString: "$_id.productId" },
+              productName: "$_id.name",
+              productCode: "$_id.code",
+              quantity: 1,
+              revenue: 1,
+              invoiceCount: { $size: "$invoices" },
+            },
+          },
+          { $sort: { revenue: -1 } },
+          { $limit: limit },
+        ])
+        .toArray(),
+      invoicesCol
+        .aggregate([
+          { $match: match },
+          {
+            $group: {
+              _id: { dealerId: "$dealerId", name: "$dealerName", city: "$dealerCity" },
+              revenue: { $sum: "$totalAmount" },
+              invoices: { $sum: 1 },
+              balance: { $sum: "$balanceAmount" },
+            },
+          },
+          {
+            $project: {
+              _id: 0,
+              dealerId: { $toString: "$_id.dealerId" },
+              dealerName: "$_id.name",
+              city: "$_id.city",
+              revenue: 1,
+              invoiceCount: "$invoices",
+              outstanding: "$balance",
+            },
+          },
+          { $sort: { revenue: -1 } },
+          { $limit: limit },
+        ])
+        .toArray(),
+      invoicesCol
+        .aggregate([
+          { $match: match },
+          {
+            $group: {
+              _id: null,
+              revenue: { $sum: "$totalAmount" },
+              invoices: { $sum: 1 },
+              outstanding: { $sum: "$balanceAmount" },
+            },
+          },
+        ])
+        .toArray(),
+    ]);
+
+    return res.json({
+      month: from.toISOString().slice(0, 7),
+      summary: {
+        revenue: totals[0]?.revenue ?? 0,
+        invoices: totals[0]?.invoices ?? 0,
+        outstanding: totals[0]?.outstanding ?? 0,
+      },
+      topProducts,
+      topDealers,
+    });
+  } catch (error) {
+    console.error("Analytics report error:", error);
+    return res.status(500).json({ error: "Failed to generate analytics" });
+  }
+});
+
 router.get("/monthly", requireRole("MANAGEMENT_ADMIN"), async (_req, res) => {
   try {
     const html = await buildMonthlyReportHtml();
