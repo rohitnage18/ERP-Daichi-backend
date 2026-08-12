@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { getDb, Product, ProductCategory, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
+import { PRODUCT_CATEGORY_NAMES } from "../../lib/product-categories";
 
 const router = Router();
 
@@ -24,6 +25,40 @@ function normalizePackaging(data: Record<string, unknown>): void {
     // Format understood by parseUnitsPerCase(): "<size> * <n> unit".
     data.lotSize = `${size} * ${units} unit`;
   }
+}
+
+async function ensureCanonicalCategories() {
+  const db = await getDb();
+  const categoriesCol = db.collection<ProductCategory>("productCategories");
+  const now = new Date();
+  for (let i = 0; i < PRODUCT_CATEGORY_NAMES.length; i++) {
+    const name = PRODUCT_CATEGORY_NAMES[i];
+    await categoriesCol.updateOne(
+      { name },
+      {
+        $set: { sortOrder: i + 1, updatedAt: now },
+        $setOnInsert: { name, description: name, createdAt: now },
+      },
+      { upsert: true }
+    );
+  }
+}
+
+async function stockMapForProducts(productIds: ObjectId[]) {
+  const db = await getDb();
+  const inventoryCol = db.collection<{
+    productId: ObjectId;
+    quantity: number;
+    reorderLevel: number;
+  }>("inventoryItems");
+  if (productIds.length === 0) return new Map<string, { quantity: number; reorderLevel: number }>();
+  const rows = await inventoryCol.find({ productId: { $in: productIds } }).toArray();
+  return new Map(
+    rows.map((r) => [
+      r.productId.toString(),
+      { quantity: r.quantity ?? 0, reorderLevel: r.reorderLevel ?? 10 },
+    ])
+  );
 }
 
 router.get("/", async (req, res) => {
@@ -57,19 +92,31 @@ router.get("/", async (req, res) => {
       .find(filter)
       .sort({ name: 1 })
       .toArray();
+
+    const stockByProduct = await stockMapForProducts(
+      products.map((p) => p._id!).filter(Boolean)
+    );
     
-    return res.json(products.map((p) => ({
-      ...p,
-      id: p._id?.toString(),
-      subCategory: {
-        id: p.subCategoryId?.toString(),
-        name: p.subCategoryName,
-        category: {
-          id: p.categoryId?.toString(),
-          name: p.categoryName,
+    return res.json(products.map((p) => {
+      const stock = stockByProduct.get(p._id!.toString());
+      const stockRemaining = stock?.quantity ?? 0;
+      const reorderLevel = stock?.reorderLevel ?? 10;
+      return {
+        ...p,
+        id: p._id?.toString(),
+        stockRemaining,
+        reorderLevel,
+        lowStock: stockRemaining <= reorderLevel,
+        subCategory: {
+          id: p.subCategoryId?.toString(),
+          name: p.subCategoryName,
+          category: {
+            id: p.categoryId?.toString(),
+            name: p.categoryName,
+          },
         },
-      },
-    })));
+      };
+    }));
   } catch (error) {
     console.error("Error fetching products:", error);
     return res.status(500).json({ error: "Failed to fetch products" });
@@ -80,26 +127,32 @@ router.get("/:id", async (req, res) => {
   try {
     const db = await getDb();
     const productsCol = db.collection<Product>("products");
-    
     const { id } = req.params;
-    
-    let product;
-    
-    if (ObjectId.isValid(id)) {
-      product = await productsCol.findOne({ _id: new ObjectId(id) });
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: "Invalid product ID" });
     }
-    
-    if (!product) {
-      product = await productsCol.findOne({ productCode: id });
-    }
-    
+
+    const product = await productsCol.findOne({ _id: new ObjectId(id) });
     if (!product) {
       return res.status(404).json({ error: "Product not found" });
     }
-    
+
+    const stockByProduct = await stockMapForProducts([product._id!]);
+    const stock = stockByProduct.get(product._id!.toString());
+    const stockRemaining = stock?.quantity ?? 0;
+    const reorderLevel = stock?.reorderLevel ?? 10;
+
     return res.json({
       ...product,
       id: product._id?.toString(),
+      stockRemaining,
+      reorderLevel,
+      lowStock: stockRemaining <= reorderLevel,
+      category: {
+        id: product.categoryId?.toString(),
+        name: product.categoryName,
+      },
       subCategory: {
         id: product.subCategoryId?.toString(),
         name: product.subCategoryName,
@@ -123,8 +176,9 @@ router.post(
       const db = await getDb();
       const productsCol = db.collection<Product>("products");
       const categoriesCol = db.collection<ProductCategory>("productCategories");
+      const inventoryCol = db.collection("inventoryItems");
       
-      const { categoryId, ...productData } = req.body;
+      const { categoryId, openingStock, reorderLevel, ...productData } = req.body;
 
       const productCode = typeof productData.productCode === "string" ? productData.productCode.trim() : "";
       const name = typeof productData.name === "string" ? productData.name.trim() : "";
@@ -168,11 +222,22 @@ router.post(
       };
       
       const result = await productsCol.insertOne(product);
+      const stockQty = Math.max(0, Number(openingStock) || 0);
+      const reorder = Math.max(0, Number(reorderLevel) || 10);
+      await inventoryCol.insertOne({
+        productId: result.insertedId,
+        quantity: stockQty,
+        reorderLevel: reorder,
+        warehouseCode: "PUNE-01",
+        lastUpdated: new Date(),
+      });
       
       return res.status(201).json({
         ...product,
         id: result.insertedId.toString(),
         _id: result.insertedId,
+        stockRemaining: stockQty,
+        reorderLevel: reorder,
       });
     } catch (error) {
       console.error("Error creating product:", error);
@@ -248,20 +313,37 @@ productCategoriesRouter.use(requireAuth);
 
 productCategoriesRouter.get("/", async (_req, res) => {
   try {
+    await ensureCanonicalCategories();
     const db = await getDb();
     const categoriesCol = db.collection<ProductCategory>("productCategories");
-    
-    const categories = await categoriesCol
-      .find({})
-      .sort({ name: 1 })
-      .toArray();
-    
-    return res.json(categories.map((c) => ({
-      id: c._id?.toString(),
-      name: c.name,
-      categoryName: c.name,
-      label: c.name,
-    })));
+
+    const keep = new Set<string>(PRODUCT_CATEGORY_NAMES as unknown as string[]);
+    const categories = await categoriesCol.find({}).toArray();
+
+    // Prefer canonical list order; hide junk single-char/number names
+    const filtered = categories.filter((c) => {
+      if (keep.has(c.name)) return true;
+      if (/^([1-9]|1[01]|[A-D]|Product Category)$/i.test(c.name.trim())) return false;
+      return true;
+    });
+
+    filtered.sort((a, b) => {
+      const ai = PRODUCT_CATEGORY_NAMES.indexOf(a.name as (typeof PRODUCT_CATEGORY_NAMES)[number]);
+      const bi = PRODUCT_CATEGORY_NAMES.indexOf(b.name as (typeof PRODUCT_CATEGORY_NAMES)[number]);
+      if (ai >= 0 && bi >= 0) return ai - bi;
+      if (ai >= 0) return -1;
+      if (bi >= 0) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    return res.json(
+      filtered.map((c) => ({
+        id: c._id?.toString(),
+        name: c.name,
+        categoryName: c.name,
+        label: c.name,
+      }))
+    );
   } catch (error) {
     console.error("Error fetching categories:", error);
     return res.status(500).json({ error: "Failed to fetch categories" });

@@ -266,6 +266,7 @@ export interface ProductCategory {
   _id?: ObjectId;
   name: string;
   description?: string;
+  sortOrder?: number;
   createdAt: Date;
   updatedAt: Date;
 }
