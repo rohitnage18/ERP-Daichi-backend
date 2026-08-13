@@ -323,7 +323,8 @@ productCategoriesRouter.get("/", async (_req, res) => {
     // Prefer canonical list order; hide junk single-char/number names
     const filtered = categories.filter((c) => {
       if (keep.has(c.name)) return true;
-      if (/^([1-9]|1[01]|[A-D]|Product Category)$/i.test(c.name.trim())) return false;
+      if (/^([1-9]|1[01]|Product Category)$/i.test(c.name.trim())) return false;
+      if (/^[A-D]$/i.test(c.name.trim())) return false;
       return true;
     });
 

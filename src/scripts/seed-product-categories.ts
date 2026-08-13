@@ -20,10 +20,16 @@ async function main() {
   const productsCol = db.collection("products");
   const now = new Date();
 
-  // Remove junk categories like bare "1","2","A" if present
+  // Remove junk categories like bare numbers / "Product Category"
+  // (bare A–D are remapped via LEGACY_CATEGORY_MAP, then removed if unused)
   const junk = await categoriesCol
     .find({
-      name: { $in: [...Array.from({ length: 11 }, (_, i) => String(i + 1)), "A", "B", "C", "D", "Product Category"] },
+      name: {
+        $in: [
+          ...Array.from({ length: 11 }, (_, i) => String(i + 1)),
+          "Product Category",
+        ],
+      },
     })
     .toArray();
   if (junk.length) {

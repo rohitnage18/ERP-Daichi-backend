@@ -1,6 +1,6 @@
 /**
  * Canonical Daichi product categories for the product form dropdown.
- * Order is display order in the UI.
+ * Pesticide types are coded A–D.
  */
 export const PRODUCT_CATEGORY_NAMES = [
   "Primary Nutrients (N:P:K)",
@@ -13,18 +13,26 @@ export const PRODUCT_CATEGORY_NAMES = [
   "Bio pesticides",
   "Organic fertilizers",
   "Bio Stimulants",
-  "Insecticides",
-  "Weedicides / herbicides",
-  "Fungicides",
-  "Plant Growth Promoter / Retardant (PGR)",
-  "Pesticides",
+  "A - Insecticides",
+  "B - Weedicides / herbicides",
+  "C - Fungicides",
+  "D - Plant Growth Promoter / Retardant (PGR)",
 ] as const;
 
-/** Map legacy seed category names → canonical names. */
+/** Map legacy / short names → canonical names. */
 export const LEGACY_CATEGORY_MAP: Record<string, string> = {
   "Water Soluble Fertilizers": "Liquid water-soluble fertilizer (WSF)",
   "Bio Products": "Bio Fertilizers",
-  "Crop Protection": "Pesticides",
-  "Plant Growth Regulators": "Plant Growth Promoter / Retardant (PGR)",
+  "Crop Protection": "A - Insecticides",
+  "Plant Growth Regulators": "D - Plant Growth Promoter / Retardant (PGR)",
   Micronutrients: "Micronutrients",
+  Insecticides: "A - Insecticides",
+  "Weedicides / herbicides": "B - Weedicides / herbicides",
+  Fungicides: "C - Fungicides",
+  "Plant Growth Promoter / Retardant (PGR)": "D - Plant Growth Promoter / Retardant (PGR)",
+  Pesticides: "A - Insecticides",
+  A: "A - Insecticides",
+  B: "B - Weedicides / herbicides",
+  C: "C - Fungicides",
+  D: "D - Plant Growth Promoter / Retardant (PGR)",
 };
