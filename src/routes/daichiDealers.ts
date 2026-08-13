@@ -7,6 +7,7 @@ import {
   ObjectId,
 } from "../lib/mongodb";
 import { requireAuth, requireRole } from "../middleware/auth";
+import { gradeFromCreditLimit } from "../lib/dealer-grade";
 import { getDaichiAdminToken, syncDaichiDealersNow, syncInFlight, triggerBackgroundDealerSync, getRemoteDealerCount } from "../lib/daichi-sync-mongo";
 
 const router = Router();
@@ -272,7 +273,7 @@ router.get("/", async (req, res) => {
         lastSyncedAt: d.lastSyncedAt,
         approvalStatus: d.approvalStatus || "APPROVED",
         creditLimit: d.creditLimit,
-        dealerGrade: d.dealerGrade,
+        dealerGrade: gradeFromCreditLimit(d.creditLimit),
         contactPersonName: d.contactPersonName,
         proprietorName: d.contactPersonName,
         contactNumber: d.mobileNumber || d.telephoneNumber,
@@ -344,6 +345,8 @@ router.get("/:externalId", async (req, res) => {
       sourceCreatedAt: dealer.sourceCreatedAt,
       sourceUpdatedAt: dealer.sourceUpdatedAt,
       lastSyncedAt: dealer.lastSyncedAt,
+      creditLimit: dealer.creditLimit ?? null,
+      dealerGrade: gradeFromCreditLimit(dealer.creditLimit),
       partners: (dealer.partners || [])
         .sort((a, b) => a.sortOrder - b.sortOrder)
         .map((row, index) => ({ id: `partner-${index}`, ...row })),
@@ -722,18 +725,12 @@ router.post("/:id/approve", requireRole("MANAGEMENT_ADMIN"), async (req, res) =>
     const db = await getDb();
     const daichiDealersCol = db.collection<DaichiDealer>("daichiDealers");
     const { id } = req.params;
-    const { creditLimit, dealerGrade } = req.body;
-
-    const gradeLimits: Record<string, number> = {
-      A: 500000,
-      B: 400000,
-      C: 300000,
-      D: 200000,
-    };
-
-    const grade = dealerGrade as "A" | "B" | "C" | "D" | undefined;
-    const resolvedLimit =
-      creditLimit ?? (grade && gradeLimits[grade] ? gradeLimits[grade] : 200000);
+    const { creditLimit } = req.body;
+    const resolvedLimit = Number(creditLimit);
+    if (!Number.isFinite(resolvedLimit) || resolvedLimit < 0) {
+      return res.status(400).json({ error: "Credit limit is required" });
+    }
+    const dealerGrade = gradeFromCreditLimit(resolvedLimit);
 
     let filter: Record<string, unknown>;
     if (ObjectId.isValid(id)) {
@@ -748,7 +745,7 @@ router.post("/:id/approve", requireRole("MANAGEMENT_ADMIN"), async (req, res) =>
         $set: {
           approvalStatus: "APPROVED",
           creditLimit: resolvedLimit,
-          dealerGrade: grade || "D",
+          dealerGrade,
           approvedById: new ObjectId(req.user!.id),
           approvedByName: req.user!.email,
           approvedAt: new Date(),

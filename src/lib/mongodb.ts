@@ -295,6 +295,8 @@ export interface Product {
   hsnCode?: string;
   packingType?: "LIQUID" | "POWDER_GRANULES";
   packingSize?: string;
+  unitSize?: number;
+  packingUnit?: "kg" | "gm" | "ml" | "lit";
   /** Alternate (bulk) unit label: Case / Box / Bag. */
   alternateUnit?: string;
   /** Base units contained in one alternate unit, e.g. 1 Case = 6 Nos. */
@@ -343,7 +345,7 @@ export interface Dealer {
   status: "DRAFT" | "SUBMITTED" | "APPROVED" | "REJECTED";
   rejectionReason?: string;
   creditLimit?: number;
-  dealerGrade?: "A" | "B" | "C" | "D";
+  dealerGrade?: "A" | "B" | "C" | "D" | "UNGRADED";
   currentOutstanding: number;
   createdById: ObjectId;
   createdByName?: string;
@@ -660,7 +662,7 @@ export interface DaichiDealer {
   syncLogs: DaichiDealerSyncLog[];
   approvalStatus?: "PENDING" | "APPROVED" | "REJECTED";
   creditLimit?: number;
-  dealerGrade?: "A" | "B" | "C" | "D";
+  dealerGrade?: "A" | "B" | "C" | "D" | "UNGRADED";
   approvedById?: ObjectId;
   approvedByName?: string;
   approvedAt?: Date;

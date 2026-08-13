@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { getDb, Dealer, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
+import { gradeFromCreditLimit } from "../../lib/dealer-grade";
 
 const router = Router();
 
@@ -41,6 +42,7 @@ router.get("/", async (req, res) => {
     return res.json(dealers.map((d) => ({
       ...d,
       id: d._id?.toString(),
+      dealerGrade: gradeFromCreditLimit(d.creditLimit),
     })));
   } catch (error) {
     console.error("Error fetching dealers:", error);
@@ -166,19 +168,12 @@ router.post(
       const dealersCol = db.collection<Dealer>("dealers");
       
       const { id } = req.params;
-      const { creditLimit, dealerGrade } = req.body;
-
-      const gradeLimits: Record<string, number> = {
-        A: 500000,
-        B: 400000,
-        C: 300000,
-        D: 200000,
-      };
-
-      const grade = dealerGrade as "A" | "B" | "C" | "D" | undefined;
-      const resolvedLimit =
-        creditLimit ??
-        (grade && gradeLimits[grade] ? gradeLimits[grade] : 200000);
+      const { creditLimit } = req.body;
+      const resolvedLimit = Number(creditLimit);
+      if (!Number.isFinite(resolvedLimit) || resolvedLimit < 0) {
+        return res.status(400).json({ error: "Credit limit is required" });
+      }
+      const dealerGrade = gradeFromCreditLimit(resolvedLimit);
       
       if (!ObjectId.isValid(id)) {
         return res.status(400).json({ error: "Invalid dealer ID" });
@@ -190,7 +185,7 @@ router.post(
           $set: {
             status: "APPROVED",
             creditLimit: resolvedLimit,
-            dealerGrade: grade || "D",
+            dealerGrade,
             approvedById: new ObjectId(req.user!.id),
             approvedByName: req.user!.email,
             approvedAt: new Date(),

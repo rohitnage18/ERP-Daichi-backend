@@ -2,6 +2,12 @@ import { Router } from "express";
 import { getDb, Product, ProductCategory, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { PRODUCT_CATEGORY_NAMES } from "../../lib/product-categories";
+import {
+  deriveCasePrice,
+  deriveLotSizeLabel,
+  isPositiveInteger,
+  parsePackingUnitSize,
+} from "../../lib/packing-math";
 
 const router = Router();
 
@@ -20,11 +26,33 @@ function normalizePackaging(data: Record<string, unknown>): void {
   if (data.gstRate != null && data.gstRate !== "") data.gstRate = Number(data.gstRate);
 
   const size = (data.packingSize as string) || "";
-  const units = Number(data.unitsPerAlternate);
-  if (size && units > 0) {
-    // Format understood by parseUnitsPerCase(): "<size> * <n> unit".
-    data.lotSize = `${size} * ${units} unit`;
+  const units =
+    data.unitsPerAlternate == null || data.unitsPerAlternate === ""
+      ? null
+      : Number(data.unitsPerAlternate);
+  if (units != null && !isPositiveInteger(units)) {
+    throw Object.assign(new Error("unitsPerCase must be a positive integer"), { status: 400 });
   }
+  const parsed = parsePackingUnitSize(size);
+  if (parsed) {
+    data.unitSize = parsed.unitSize;
+    data.packingUnit = parsed.unit;
+  }
+  // lotSize is always derived — never trusted from the client
+  data.lotSize = deriveLotSizeLabel(size, units) || "";
+}
+
+function withDerivedPacking<T extends Product>(p: T) {
+  const units = p.unitsPerAlternate ?? null;
+  const lotSize = deriveLotSizeLabel(p.packingSize, units) || "";
+  const pricePerUnit = Number.isFinite(p.basePrice) && p.basePrice > 0 ? p.basePrice : null;
+  return {
+    ...p,
+    lotSize,
+    pricePerUnit,
+    casePrice: deriveCasePrice(pricePerUnit, units),
+    unitsPerCase: units,
+  };
 }
 
 async function ensureCanonicalCategories() {
@@ -102,7 +130,7 @@ router.get("/", async (req, res) => {
       const stockRemaining = stock?.quantity ?? 0;
       const reorderLevel = stock?.reorderLevel ?? 10;
       return {
-        ...p,
+        ...withDerivedPacking(p),
         id: p._id?.toString(),
         stockRemaining,
         reorderLevel,
@@ -144,7 +172,7 @@ router.get("/:id", async (req, res) => {
     const reorderLevel = stock?.reorderLevel ?? 10;
 
     return res.json({
-      ...product,
+      ...withDerivedPacking(product),
       id: product._id?.toString(),
       stockRemaining,
       reorderLevel,
@@ -190,6 +218,14 @@ router.post(
       }
       productData.productCode = productCode;
       productData.name = name;
+
+      delete productData.lotSize;
+      delete productData.casePrice;
+      delete productData.pricePerUnit;
+      delete productData.unitsPerCase;
+      if (req.body.unitsPerCase != null && productData.unitsPerAlternate == null) {
+        productData.unitsPerAlternate = req.body.unitsPerCase;
+      }
 
       normalizePackaging(productData);
 
@@ -240,6 +276,9 @@ router.post(
         reorderLevel: reorder,
       });
     } catch (error) {
+      if ((error as { status?: number }).status === 400) {
+        return res.status(400).json({ error: (error as Error).message });
+      }
       console.error("Error creating product:", error);
       if ((error as { code?: number }).code === 11000) {
         return res
@@ -272,6 +311,13 @@ router.patch(
       
       delete updateData._id;
       delete updateData.id;
+      delete updateData.lotSize;
+      delete updateData.casePrice;
+      delete updateData.pricePerUnit;
+      delete updateData.unitsPerCase;
+      if (req.body.unitsPerCase != null && req.body.unitsPerAlternate == null) {
+        updateData.unitsPerAlternate = req.body.unitsPerCase;
+      }
       normalizePackaging(updateData);
 
       // Resolve category name if category changed.
@@ -295,10 +341,13 @@ router.patch(
       }
       
       return res.json({
-        ...result,
+        ...withDerivedPacking(result),
         id: result._id?.toString(),
       });
     } catch (error) {
+      if ((error as { status?: number }).status === 400) {
+        return res.status(400).json({ error: (error as Error).message });
+      }
       console.error("Error updating product:", error);
       return res.status(500).json({ error: "Failed to update product" });
     }

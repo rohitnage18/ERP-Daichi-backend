@@ -15,7 +15,9 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:products": "tsx prisma/seed-indicafert.ts",
     "db:seed:field": "tsx prisma/seed-field.ts",
-    "db:seed:mongo": "tsx src/scripts/seed-mongodb.ts"
+    "db:seed:mongo": "tsx src/scripts/seed-mongodb.ts",
+    "db:seed:master": "tsx src/scripts/seed-indicafert-master.ts",
+    "test": "tsx --test src/lib/packing-math.test.ts src/lib/dealer-grade.test.ts src/lib/indicafert-master.test.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.15.0",
