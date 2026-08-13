@@ -1,4 +1,5 @@
 import { Router } from "express";
+import publicRouter from "./public";
 import authRouter from "./auth";
 import dealersRouter from "./dealers";
 import productsRouter, { productCategoriesRouter } from "./products";
@@ -21,6 +22,7 @@ import logisticsRouter from "./logistics";
 
 export const mongoApiRouter = Router();
 
+mongoApiRouter.use("/public", publicRouter);
 mongoApiRouter.use("/auth", authRouter);
 mongoApiRouter.use("/dealers", dealersRouter);
 mongoApiRouter.use("/products", productsRouter);

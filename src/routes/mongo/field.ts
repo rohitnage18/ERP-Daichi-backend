@@ -12,20 +12,71 @@ function dayOnly(d: Date) {
   return x;
 }
 
+/** Match records saved with ObjectId or string userId. */
+function userIdFilter(userId: string): Record<string, unknown> {
+  if (ObjectId.isValid(userId)) {
+    return { $or: [{ userId: new ObjectId(userId) }, { userId }] };
+  }
+  return { userId };
+}
+
+function actorName(req: { user?: { email?: string; name?: string } }) {
+  return req.user?.name || req.user?.email || "";
+}
+
+function dateRange(query: { from?: unknown; to?: unknown }, field: string): Record<string, unknown> {
+  const from = typeof query.from === "string" ? new Date(query.from) : null;
+  const to = typeof query.to === "string" ? new Date(query.to) : null;
+  const range: Record<string, Date> = {};
+  if (from && !Number.isNaN(from.getTime())) range.$gte = from;
+  if (to && !Number.isNaN(to.getTime())) range.$lte = to;
+  return Object.keys(range).length ? { [field]: range } : {};
+}
+
+function listFilter(req: { user?: { id: string; role: string }; query: Record<string, unknown> }) {
+  const userId = req.user!.id;
+  const isAdmin = req.user!.role === "MANAGEMENT_ADMIN";
+  const teamScope = isAdmin && req.query.scope === "team";
+  if (teamScope) {
+    const qUserId = req.query.userId;
+    if (typeof qUserId === "string" && ObjectId.isValid(qUserId)) {
+      return userIdFilter(qUserId);
+    }
+    return {};
+  }
+  return userIdFilter(userId);
+}
+
+async function recordGpsTrack(
+  userId: string,
+  userName: string,
+  data: { latitude?: number; longitude?: number; accuracy?: number; locationLabel?: string },
+  source: string,
+  visitId?: import("mongodb").ObjectId
+) {
+  if (data.latitude == null || data.longitude == null) return;
+  const db = await getDb();
+  const tracksCol = db.collection<LocationTrack>("locationTracks");
+  await tracksCol.insertOne({
+    userId: new ObjectId(userId),
+    userName,
+    latitude: Number(data.latitude),
+    longitude: Number(data.longitude),
+    accuracy: data.accuracy ?? undefined,
+    source,
+    visitId,
+    addressLabel: data.locationLabel || undefined,
+    recordedAt: new Date(),
+  });
+}
+
 router.get("/visits", async (req, res) => {
   try {
     const db = await getDb();
     const visitsCol = db.collection<SalesVisit>("salesVisits");
 
-    const filter: Record<string, unknown> = {};
-    if (req.user!.role === "SALES_MARKETING") {
-      filter.userId = new ObjectId(req.user!.id);
-    } else if (req.query.userId && ObjectId.isValid(req.query.userId as string)) {
-      filter.userId = new ObjectId(req.query.userId as string);
-    }
-
     const visits = await visitsCol
-      .find(filter)
+      .find({ ...listFilter(req), ...dateRange(req.query, "visitDate") })
       .sort({ visitDate: -1 })
       .limit(200)
       .toArray();
@@ -53,7 +104,7 @@ router.post("/visits", async (req, res) => {
     const visit: SalesVisit = {
       visitDate: new Date(data.visitDate || Date.now()),
       userId: new ObjectId(req.user!.id),
-      userName: req.user!.email,
+      userName: actorName(req),
       dealerId: data.dealerId && ObjectId.isValid(data.dealerId) ? new ObjectId(data.dealerId) : undefined,
       dealerName: data.dealerName || undefined,
       prospectName: data.prospectName || undefined,
@@ -76,7 +127,7 @@ router.post("/visits", async (req, res) => {
       const tracksCol = db.collection<LocationTrack>("locationTracks");
       await tracksCol.insertOne({
         userId: new ObjectId(req.user!.id),
-        userName: req.user!.email,
+        userName: actorName(req),
         latitude: data.latitude,
         longitude: data.longitude,
         accuracy: data.accuracy ?? undefined,
@@ -102,15 +153,8 @@ router.get("/daily-logs", async (req, res) => {
     const db = await getDb();
     const logsCol = db.collection<DailyLog>("dailyLogs");
 
-    const filter: Record<string, unknown> = {};
-    if (req.user!.role === "SALES_MARKETING") {
-      filter.userId = new ObjectId(req.user!.id);
-    } else if (req.query.userId && ObjectId.isValid(req.query.userId as string)) {
-      filter.userId = new ObjectId(req.query.userId as string);
-    }
-
     const logs = await logsCol
-      .find(filter)
+      .find({ ...listFilter(req), ...dateRange(req.query, "logDate") })
       .sort({ logDate: -1 })
       .limit(100)
       .toArray();
@@ -136,14 +180,14 @@ router.post("/daily-logs", async (req, res) => {
     const logDate = dayOnly(new Date(data.logDate || Date.now()));
 
     const existing = await logsCol.findOne({
-      userId: new ObjectId(req.user!.id),
+      ...userIdFilter(req.user!.id),
       logDate,
     });
 
     const logData: Partial<DailyLog> = {
       logDate,
       userId: new ObjectId(req.user!.id),
-      userName: req.user!.email,
+      userName: actorName(req),
       dayStartTime: data.dayStartTime ? new Date(data.dayStartTime) : undefined,
       dayEndTime: data.dayEndTime ? new Date(data.dayEndTime) : undefined,
       summary: data.summary,
@@ -184,6 +228,8 @@ router.post("/daily-logs", async (req, res) => {
       result = { ...newLog, _id: insertResult.insertedId };
     }
 
+    await recordGpsTrack(req.user!.id, actorName(req), data, "DAILY_LOG");
+
     return res.status(201).json({
       ...result,
       id: result?._id?.toString(),
@@ -199,10 +245,7 @@ router.get("/allowances", async (req, res) => {
     const db = await getDb();
     const claimsCol = db.collection<AllowanceClaim>("allowanceClaims");
 
-    const filter: Record<string, unknown> = {};
-    if (req.user!.role === "SALES_MARKETING") {
-      filter.userId = new ObjectId(req.user!.id);
-    }
+    const filter: Record<string, unknown> = { ...listFilter(req) };
     if (req.query.status) {
       filter.status = req.query.status;
     }
@@ -235,11 +278,14 @@ router.post("/allowances", async (req, res) => {
     const claim: AllowanceClaim = {
       claimDate: new Date(data.claimDate || Date.now()),
       userId: new ObjectId(req.user!.id),
-      userName: req.user!.email,
+      userName: actorName(req),
       claimType: data.claimType,
-      amount: data.amount,
+      amount: Number(data.amount) || 0,
       description: data.description,
-      kilometers: data.kilometers ?? undefined,
+      kilometers:
+        data.kilometers != null && data.kilometers !== ""
+          ? Number(data.kilometers)
+          : undefined,
       receiptNote: data.receiptNote || undefined,
       odometerPhoto: data.odometerPhoto || undefined,
       latitude: data.latitude ?? undefined,
@@ -251,6 +297,8 @@ router.post("/allowances", async (req, res) => {
     };
 
     const result = await claimsCol.insertOne(claim);
+
+    await recordGpsTrack(req.user!.id, actorName(req), data, "ALLOWANCE");
 
     return res.status(201).json({
       ...claim,
@@ -279,7 +327,7 @@ router.patch("/allowances", requireRole("MANAGEMENT_ADMIN"), async (req, res) =>
           status,
           rejectionReason: status === "REJECTED" ? rejectionReason : undefined,
           approvedById: new ObjectId(req.user!.id),
-          approvedByName: req.user!.email,
+          approvedByName: actorName(req),
           approvedAt: new Date(),
           updatedAt: new Date(),
         },
@@ -306,15 +354,8 @@ router.get("/location", async (req, res) => {
     const db = await getDb();
     const tracksCol = db.collection<LocationTrack>("locationTracks");
 
-    const filter: Record<string, unknown> = {};
-    if (req.user!.role === "SALES_MARKETING") {
-      filter.userId = new ObjectId(req.user!.id);
-    } else if (req.query.userId && ObjectId.isValid(req.query.userId as string)) {
-      filter.userId = new ObjectId(req.query.userId as string);
-    }
-
     const tracks = await tracksCol
-      .find(filter)
+      .find(listFilter(req))
       .sort({ recordedAt: -1 })
       .limit(500)
       .toArray();
@@ -340,7 +381,7 @@ router.post("/location", async (req, res) => {
 
     const track: LocationTrack = {
       userId: new ObjectId(req.user!.id),
-      userName: req.user!.email,
+      userName: actorName(req),
       latitude: data.latitude,
       longitude: data.longitude,
       accuracy: data.accuracy ?? undefined,
