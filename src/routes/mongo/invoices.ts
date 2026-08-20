@@ -355,7 +355,7 @@ interface CreateInvoiceBody {
   shippingStateCode?: string;
   shippingPincode?: string;
   shippingGstn?: string;
-  /** Positive amount deducted as "Less : Freight Charges" (Tally style). */
+  /** Freight amount shown on the invoice; not included in totalAmount. */
   freightCharges?: number;
   termsAndConditions?: string;
   bankDetails?: string;
@@ -517,9 +517,9 @@ async function buildInvoiceDoc(
       });
       
       const totalTax = totalCgst + totalSgst + totalIgst;
-      // Tally-style: freight is an optional deduction ("Less : Freight Charges").
+      // Freight is stored for display only — not included in totalAmount.
       const freightCharges = Math.max(0, Number(body.freightCharges) || 0);
-      const rawTotal = subtotal + totalTax - freightCharges;
+      const rawTotal = subtotal + totalTax;
       const roundedTotal = Math.round(rawTotal);
       const roundOff = Math.round((roundedTotal - rawTotal) * 100) / 100;
       const totalAmount = roundedTotal;
