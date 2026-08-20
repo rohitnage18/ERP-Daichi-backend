@@ -164,6 +164,27 @@ export function amountToWords(amount: number): string {
   return words;
 }
 
+/** Goods + tax only. Freight is display-only and must not change this total. */
+export function payableInvoiceTotals(invoice: {
+  subtotal?: number | null;
+  totalTax?: number | null;
+  cgstAmount?: number | null;
+  sgstAmount?: number | null;
+  igstAmount?: number | null;
+}): { rawTotal: number; roundOff: number; totalAmount: number } {
+  const subtotal = Number(invoice.subtotal) || 0;
+  const fromField = invoice.totalTax == null ? NaN : Number(invoice.totalTax);
+  const totalTax = Number.isFinite(fromField)
+    ? fromField
+    : (Number(invoice.cgstAmount) || 0) +
+      (Number(invoice.sgstAmount) || 0) +
+      (Number(invoice.igstAmount) || 0);
+  const rawTotal = subtotal + totalTax;
+  const totalAmount = Math.round(rawTotal);
+  const roundOff = Math.round((totalAmount - rawTotal) * 100) / 100;
+  return { rawTotal, roundOff, totalAmount };
+}
+
 export const UQC_CODES: Record<string, string> = {
   "BAG": "BAG-BAGS",
   "BAL": "BAL-BALE",

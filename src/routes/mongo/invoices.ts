@@ -4,7 +4,7 @@ import { Db } from "mongodb";
 import { getDb, Invoice, Order, Dealer, Product, DaichiDealer, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { sendEmail } from "../../lib/email";
-import { amountToWords, getStateCodeFromGSTIN, getStateNameFromCode, getUQCCode } from "../../lib/utils";
+import { amountToWords, payableInvoiceTotals, getStateCodeFromGSTIN, getStateNameFromCode, getUQCCode } from "../../lib/utils";
 
 /**
  * Resolve lotSize / Units-per-Case for an invoice line from the product master.
@@ -127,6 +127,22 @@ const SUPPLIER_DETAILS = {
 
 const router = Router();
 
+function withPayableTotals<T extends {
+  subtotal?: number;
+  totalTax?: number;
+  cgstAmount?: number;
+  sgstAmount?: number;
+  igstAmount?: number;
+}>(invoice: T) {
+  const payable = payableInvoiceTotals(invoice);
+  return {
+    ...invoice,
+    roundOff: payable.roundOff !== 0 ? payable.roundOff : undefined,
+    totalAmount: payable.totalAmount,
+    totalAmountInWords: amountToWords(payable.totalAmount),
+  };
+}
+
 /** Public invoice view for emailed share links (no auth). */
 router.get("/public/:token", async (req, res) => {
   try {
@@ -140,7 +156,7 @@ router.get("/public/:token", async (req, res) => {
       return res.status(404).json({ error: "Invoice not found" });
     }
     return res.json({
-      ...invoice,
+      ...withPayableTotals(invoice),
       id: invoice._id?.toString(),
       _id: undefined,
       shareToken: undefined,
@@ -279,7 +295,7 @@ router.get("/:id", async (req, res) => {
       (dealer && "contactNumber" in dealer ? dealer.contactNumber : undefined);
     
     return res.json({
-      ...invoice,
+      ...withPayableTotals(invoice),
       id: invoice._id?.toString(),
       contactPersonName,
       contactNumber,
@@ -517,12 +533,14 @@ async function buildInvoiceDoc(
       });
       
       const totalTax = totalCgst + totalSgst + totalIgst;
-      // Freight is stored for display only — not included in totalAmount.
       const freightCharges = Math.max(0, Number(body.freightCharges) || 0);
-      const rawTotal = subtotal + totalTax;
-      const roundedTotal = Math.round(rawTotal);
-      const roundOff = Math.round((roundedTotal - rawTotal) * 100) / 100;
-      const totalAmount = roundedTotal;
+      const { roundOff, totalAmount } = payableInvoiceTotals({
+        subtotal,
+        totalTax,
+        cgstAmount: totalCgst,
+        sgstAmount: totalSgst,
+        igstAmount: totalIgst,
+      });
       
       const invoiceNumber = await generateInvoiceNumber();
       
