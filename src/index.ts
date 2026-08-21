@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { mongoApiRouter } from "./routes/mongo";
+import { getPublicStats } from "./routes/mongo/public";
 import { connectMongoDB, getDb } from "./lib/mongodb";
 import { startDaichiDealerScheduler } from "./lib/daichi-sync-mongo";
 import daichiSyncRouter from "./routes/daichiSync";
@@ -67,6 +68,8 @@ app.get("/", (_req, res) => {
     api: "/api",
   });
 });
+
+app.get("/api/public/stats", getPublicStats);
 
 app.use("/api", mongoApiRouter);
 
