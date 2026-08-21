@@ -1,22 +1,20 @@
 import { Request, Response, Router } from "express";
-import { getDb, Product, DaichiDealer, Dealer } from "../../lib/mongodb";
+import { getDb, Product, DaichiDealer } from "../../lib/mongodb";
 
 const router = Router();
 
 export async function loadCompanyStats(): Promise<{ activeDealers: number; products: number }> {
   const db = await getDb();
   const daichiDealersCol = db.collection<DaichiDealer>("daichiDealers");
-  const dealersCol = db.collection<Dealer>("dealers");
   const productsCol = db.collection<Product>("products");
 
-  const [daichiDealers, localDealers, products] = await Promise.all([
+  const [totalDealers, products] = await Promise.all([
     daichiDealersCol.countDocuments(),
-    dealersCol.countDocuments().catch(() => 0),
     productsCol.countDocuments({ status: "ACTIVE" }),
   ]);
 
   return {
-    activeDealers: daichiDealers + localDealers,
+    activeDealers: totalDealers,
     products,
   };
 }

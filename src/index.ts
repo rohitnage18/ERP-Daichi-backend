@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { mongoApiRouter } from "./routes/mongo";
-import { getPublicStats } from "./routes/mongo/public";
+import { getPublicStats, loadCompanyStats } from "./routes/mongo/public";
 import { connectMongoDB, getDb } from "./lib/mongodb";
 import { startDaichiDealerScheduler } from "./lib/daichi-sync-mongo";
 import daichiSyncRouter from "./routes/daichiSync";
@@ -51,10 +51,20 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 
 app.get("/health", async (_req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cache-Control", "no-store");
   try {
     const db = await getDb();
     await db.command({ ping: 1 });
-    res.json({ ok: true, service: "daichi-api", database: "mongodb" });
+    const stats = await loadCompanyStats();
+    res.json({
+      ok: true,
+      service: "daichi-api",
+      database: "mongodb",
+      totalDealers: stats.activeDealers,
+      activeDealers: stats.activeDealers,
+      products: stats.products,
+    });
   } catch {
     res.status(503).json({ ok: false, service: "daichi-api", database: "unavailable" });
   }
