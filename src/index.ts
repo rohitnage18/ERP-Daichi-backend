@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { mongoApiRouter } from "./routes/mongo";
-import { getPublicStats } from "./routes/mongo/public";
+import { getPublicStats, loadCompanyStats } from "./routes/mongo/public";
 import { connectMongoDB, getDb } from "./lib/mongodb";
 import { startDaichiDealerScheduler } from "./lib/daichi-sync-mongo";
 import daichiSyncRouter from "./routes/daichiSync";
@@ -54,7 +54,8 @@ app.get("/health", async (_req, res) => {
   try {
     const db = await getDb();
     await db.command({ ping: 1 });
-    res.json({ ok: true, service: "daichi-api", database: "mongodb" });
+    const stats = await loadCompanyStats().catch(() => ({ activeDealers: 0, products: 0 }));
+    res.json({ ok: true, service: "daichi-api", database: "mongodb", ...stats });
   } catch {
     res.status(503).json({ ok: false, service: "daichi-api", database: "unavailable" });
   }
@@ -65,10 +66,13 @@ app.get("/", (_req, res) => {
     ok: true,
     service: "daichi-api",
     health: "/health",
+    stats: "/stats",
     api: "/api",
   });
 });
 
+/** Outside /api so auth middleware cannot intercept it. */
+app.get("/stats", getPublicStats);
 app.get("/api/public/stats", getPublicStats);
 
 app.use("/api", mongoApiRouter);

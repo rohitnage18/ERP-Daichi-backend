@@ -4,7 +4,10 @@ import { requireAuth, requireRole } from "../../middleware/auth";
 
 const router = Router();
 
-router.use(requireAuth);
+router.use((req, res, next) => {
+  if (req.path.startsWith("/public")) return next("router");
+  return requireAuth(req, res, next);
+});
 
 function dayOnly(d: Date) {
   const x = new Date(d);
