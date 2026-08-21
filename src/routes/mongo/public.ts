@@ -3,8 +3,17 @@ import { getDb, Product, DaichiDealer, Dealer } from "../../lib/mongodb";
 
 const router = Router();
 
-/** Unauthenticated company counts for the login screen — live Mongo totals. */
+function dealerKey(d: { gstNumber?: string; firmName?: string; _id?: unknown }): string {
+  const gst = String(d.gstNumber || "").trim().toLowerCase();
+  if (gst) return `gst:${gst}`;
+  const name = String(d.firmName || "").trim().toLowerCase();
+  if (name) return `name:${name}`;
+  return `id:${String(d._id || "")}`;
+}
+
+/** Unauthenticated live counts for the login screen. */
 router.get("/stats", async (_req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   try {
     const db = await getDb();
     const daichiDealersCol = db.collection<DaichiDealer>("daichiDealers");
@@ -12,13 +21,23 @@ router.get("/stats", async (_req, res) => {
     const productsCol = db.collection<Product>("products");
 
     const [daichiDealers, localDealers, products] = await Promise.all([
-      daichiDealersCol.countDocuments(),
-      dealersCol.countDocuments().catch(() => 0),
-      productsCol.countDocuments(),
+      daichiDealersCol
+        .find({ approvalStatus: { $ne: "REJECTED" } }, { projection: { gstNumber: 1, firmName: 1 } })
+        .toArray(),
+      dealersCol
+        .find({ status: { $nin: ["REJECTED"] } }, { projection: { gstNumber: 1, firmName: 1 } })
+        .toArray()
+        .catch(() => [] as Dealer[]),
+      productsCol.countDocuments({ status: "ACTIVE" }),
     ]);
 
+    const dealerKeys = new Set<string>();
+    for (const d of [...daichiDealers, ...localDealers]) {
+      dealerKeys.add(dealerKey(d));
+    }
+
     return res.json({
-      activeDealers: Math.max(daichiDealers, localDealers),
+      activeDealers: dealerKeys.size,
       products,
     });
   } catch (error) {
