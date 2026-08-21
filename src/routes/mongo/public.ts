@@ -10,8 +10,8 @@ export async function loadCompanyStats(): Promise<{ activeDealers: number; produ
   const productsCol = db.collection<Product>("products");
 
   const [daichiDealers, localDealers, products] = await Promise.all([
-    daichiDealersCol.countDocuments({ approvalStatus: { $ne: "REJECTED" } }),
-    dealersCol.countDocuments({ status: { $nin: ["REJECTED"] } }).catch(() => 0),
+    daichiDealersCol.countDocuments(),
+    dealersCol.countDocuments().catch(() => 0),
     productsCol.countDocuments({ status: "ACTIVE" }),
   ]);
 
