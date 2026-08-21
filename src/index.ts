@@ -2,7 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { mongoApiRouter } from "./routes/mongo";
-import { getPublicStats, loadCompanyStats } from "./routes/mongo/public";
+import { getPublicStats } from "./routes/mongo/public";
 import { connectMongoDB, getDb } from "./lib/mongodb";
 import { startDaichiDealerScheduler } from "./lib/daichi-sync-mongo";
 import daichiSyncRouter from "./routes/daichiSync";
@@ -54,8 +54,7 @@ app.get("/health", async (_req, res) => {
   try {
     const db = await getDb();
     await db.command({ ping: 1 });
-    const stats = await loadCompanyStats().catch(() => ({ activeDealers: 0, products: 0 }));
-    res.json({ ok: true, service: "daichi-api", database: "mongodb", ...stats });
+    res.json({ ok: true, service: "daichi-api", database: "mongodb" });
   } catch {
     res.status(503).json({ ok: false, service: "daichi-api", database: "unavailable" });
   }
