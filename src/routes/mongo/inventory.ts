@@ -76,6 +76,8 @@ router.get("/", async (_req, res) => {
                 productCode: product.productCode,
                 name: product.name,
                 packingSize: product.packingSize,
+                packingType: product.packingType,
+                packingUnit: product.packingUnit,
                 unitOfMeasure: product.unitOfMeasure,
                 categoryName: product.categoryName,
                 subCategory: {
