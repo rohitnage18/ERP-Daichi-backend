@@ -8,6 +8,7 @@ router.use((req, res, next) => {
   if (req.path.startsWith("/public")) return next("router");
   return requireAuth(req, res, next);
 });
+router.use(requireRole("SALES_MARKETING", "MANAGEMENT_ADMIN"));
 
 function dayOnly(d: Date) {
   const x = new Date(d);

@@ -13,6 +13,7 @@ import { getDaichiAdminToken, syncDaichiDealersNow, syncInFlight, triggerBackgro
 const router = Router();
 
 router.use(requireAuth);
+router.use(requireRole("SALES_MARKETING", "MANAGEMENT_ADMIN", "ACCOUNT"));
 
 const REQUIRED_DOC_TYPES = [
   "panCard",
@@ -35,7 +36,7 @@ let lastSyncResult: {
 } | null = null;
 let syncInProgress = false;
 
-router.post("/sync/auto", async (_req, res) => {
+router.post("/sync/auto", requireRole("MANAGEMENT_ADMIN", "SALES_MARKETING"), async (_req, res) => {
   const result = await triggerBackgroundDealerSync();
   return res.json(result);
 });

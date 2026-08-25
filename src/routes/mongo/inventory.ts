@@ -6,6 +6,8 @@ const router = Router();
 
 router.use(requireAuth);
 
+const inventoryRoles = requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS");
+
 interface InventoryItemDoc {
   _id?: ObjectId;
   productId: ObjectId;
@@ -45,7 +47,7 @@ async function ensureInventoryForProducts() {
   }
 }
 
-router.get("/", async (_req, res) => {
+router.get("/", inventoryRoles, async (_req, res) => {
   try {
     await ensureInventoryForProducts();
 
@@ -102,7 +104,7 @@ router.get("/", async (_req, res) => {
 /** Adjust stock for a product (set absolute qty or delta). */
 router.patch(
   "/:productId",
-  requireRole("MANAGEMENT_ADMIN", "ACCOUNT", "LOGISTICS"),
+  inventoryRoles,
   async (req, res) => {
     try {
       const { productId } = req.params;

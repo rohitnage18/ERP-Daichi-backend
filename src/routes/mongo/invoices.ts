@@ -201,7 +201,10 @@ async function generateInvoiceNumber(): Promise<string> {
   return `${prefix}${seq}/${fy}`;
 }
 
-router.get("/", async (req, res) => {
+router.get(
+  "/",
+  requireRole("MANAGEMENT_ADMIN", "ACCOUNT", "PRODUCTION_LOGISTICS"),
+  async (req, res) => {
   try {
     const db = await getDb();
     const invoicesCol = db.collection<Invoice>("invoices");
@@ -253,7 +256,10 @@ router.get("/", async (req, res) => {
   }
 });
 
-router.get("/:id", async (req, res) => {
+router.get(
+  "/:id",
+  requireRole("MANAGEMENT_ADMIN", "ACCOUNT", "PRODUCTION_LOGISTICS"),
+  async (req, res) => {
   try {
     const db = await getDb();
     const invoicesCol = db.collection<Invoice>("invoices");

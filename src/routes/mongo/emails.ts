@@ -121,6 +121,16 @@ router.post("/invite", requireRole("MANAGEMENT_ADMIN"), async (req, res) => {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
+    const allowedRoles = [
+      "SALES_MARKETING",
+      "MANAGEMENT_ADMIN",
+      "PRODUCTION_LOGISTICS",
+      "ACCOUNT",
+    ];
+    if (!allowedRoles.includes(String(role))) {
+      return res.status(400).json({ error: "Invalid role" });
+    }
+
     const email = String(emailRaw).trim().toLowerCase();
     const employeeId = String(employeeIdRaw).trim();
     const db = await getDb();

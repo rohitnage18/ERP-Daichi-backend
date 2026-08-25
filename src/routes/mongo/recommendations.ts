@@ -1,10 +1,10 @@
 import { Router } from "express";
 import { getDb, ObjectId } from "../../lib/mongodb";
-import { requireAuth } from "../../middleware/auth";
+import { requireAuth, requireRole } from "../../middleware/auth";
 
 const router = Router();
 
-router.use(requireAuth);
+router.use(requireAuth, requireRole("SALES_MARKETING"));
 
 export type SalesActivityType =
   | "RECOMMENDATION"

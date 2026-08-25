@@ -15,7 +15,7 @@ const router = Router();
 
 router.use(requireAuth);
 
-router.get("/stats", async (_req, res) => {
+router.get("/stats", async (req, res) => {
   try {
     const db = await getDb();
 
@@ -141,7 +141,7 @@ router.get("/stats", async (_req, res) => {
     const collectedRevenue = revenueResult[0]?.paid || 0;
     const paymentsMtd = paymentsMtdResult[0]?.total ?? collectedRevenue;
 
-    return res.json({
+    const payload = {
       stats: {
         totalOrders,
         pendingOrders,
@@ -194,7 +194,41 @@ router.get("/stats", async (_req, res) => {
           id: c._id?.toString(),
         })),
       },
-    });
+    };
+
+    const role = req.user?.role;
+    if (role !== "MANAGEMENT_ADMIN") {
+      payload.pendingApprovals = { dealers: [], orders: [], creditNotes: [] };
+    }
+    if (role === "SALES_MARKETING") {
+      const s = payload.stats as Record<string, unknown>;
+      delete s.totalRevenue;
+      delete s.collectedRevenue;
+      delete s.outstandingRevenue;
+      delete s.paymentsMtd;
+      delete s.totalPayments;
+      delete s.paymentsThisMonth;
+      delete s.overdueInvoices;
+      delete s.sentInvoices;
+      delete s.paidInvoices;
+      delete s.pendingCreditNotes;
+      delete s.approvedCreditNotes;
+      delete s.totalCreditNotes;
+    }
+    if (role === "PRODUCTION_LOGISTICS") {
+      const s = payload.stats as Record<string, unknown>;
+      delete s.totalRevenue;
+      delete s.collectedRevenue;
+      delete s.outstandingRevenue;
+      delete s.paymentsMtd;
+      delete s.totalPayments;
+      delete s.paymentsThisMonth;
+      delete s.pendingCreditNotes;
+      delete s.approvedCreditNotes;
+      delete s.totalCreditNotes;
+    }
+
+    return res.json(payload);
   } catch (error) {
     console.error("Error fetching dashboard stats:", error);
     return res.status(500).json({ error: "Failed to fetch dashboard stats" });

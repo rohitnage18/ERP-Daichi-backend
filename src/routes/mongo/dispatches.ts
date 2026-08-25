@@ -37,7 +37,7 @@ async function deductInventory(
   }
 }
 
-router.get("/", async (_req, res) => {
+router.get("/", requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS"), async (_req, res) => {
   try {
     const db = await getDb();
     const dispatchesCol = db.collection<Dispatch>("dispatches");

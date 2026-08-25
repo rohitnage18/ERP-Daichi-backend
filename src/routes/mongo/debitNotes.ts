@@ -15,7 +15,7 @@ async function nextDebitNoteNumber(): Promise<string> {
   return generateDebitNoteNumber(count + 1);
 }
 
-router.get("/", async (req, res) => {
+router.get("/", requireRole("MANAGEMENT_ADMIN", "ACCOUNT"), async (req, res) => {
   try {
     const db = await getDb();
     const col = db.collection<DebitNote>("debitNotes");

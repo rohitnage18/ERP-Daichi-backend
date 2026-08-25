@@ -6,6 +6,7 @@ import { gradeFromCreditLimit } from "../../lib/dealer-grade";
 const router = Router();
 
 router.use(requireAuth);
+router.use(requireRole("SALES_MARKETING", "MANAGEMENT_ADMIN", "ACCOUNT"));
 
 router.get("/", async (req, res) => {
   try {
