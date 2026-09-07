@@ -444,6 +444,8 @@ export interface Invoice {
   status: "DRAFT" | "SENT" | "PARTIALLY_PAID" | "PAID" | "OVERDUE" | "CANCELLED";
   logisticsStatus?: "READY_FOR_DISPATCH" | "PROCESSING" | "DISPATCHED" | "DELIVERED";
   dispatchId?: ObjectId;
+  /** True after billed qty has been taken off warehouse stock. */
+  stockDeducted?: boolean;
   
   placeOfSupply?: string;
   placeOfSupplyCode?: string;

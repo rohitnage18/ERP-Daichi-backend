@@ -5,6 +5,7 @@ import { getDb, Invoice, Order, Dealer, Product, DaichiDealer, ObjectId } from "
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { sendEmail } from "../../lib/email";
 import { amountToWords, payableInvoiceTotals, getStateCodeFromGSTIN, getStateNameFromCode, getUQCCode } from "../../lib/utils";
+import { deductInventory } from "../../lib/inventory-stock";
 
 /**
  * Resolve lotSize / Units-per-Case for an invoice line from the product master.
@@ -133,6 +134,7 @@ function withPayableTotals<T extends {
   cgstAmount?: number;
   sgstAmount?: number;
   igstAmount?: number;
+  freightCharges?: number;
 }>(invoice: T) {
   const payable = payableInvoiceTotals(invoice);
   return {
@@ -237,7 +239,7 @@ router.get(
       .toArray();
     
     return res.json(invoices.map((inv) => ({
-      ...inv,
+      ...withPayableTotals(inv),
       id: inv._id?.toString(),
       dealer: {
         id: inv.dealerId?.toString(),
@@ -546,6 +548,7 @@ async function buildInvoiceDoc(
         cgstAmount: totalCgst,
         sgstAmount: totalSgst,
         igstAmount: totalIgst,
+        freightCharges,
       });
       
       const invoiceNumber = await generateInvoiceNumber();
@@ -647,9 +650,12 @@ router.post(
 
       const invoice = await buildInvoiceDoc(db, body, req.user!.id, req.user!.email);
       const result = await invoicesCol.insertOne(invoice);
+      await deductInventory(db, invoice.items || []);
+      await invoicesCol.updateOne({ _id: result.insertedId }, { $set: { stockDeducted: true } });
 
       return res.status(201).json({
         ...invoice,
+        stockDeducted: true,
         id: result.insertedId.toString(),
         _id: result.insertedId,
       });
@@ -722,9 +728,12 @@ router.post(
 
       const invoice = await buildInvoiceDoc(db, body, req.user!.id, req.user!.email);
       const result = await invoicesCol.insertOne(invoice);
+      await deductInventory(db, invoice.items || []);
+      await invoicesCol.updateOne({ _id: result.insertedId }, { $set: { stockDeducted: true } });
 
       return res.status(201).json({
         ...invoice,
+        stockDeducted: true,
         id: result.insertedId.toString(),
         _id: result.insertedId,
       });
@@ -830,7 +839,7 @@ router.post(
       }
       
       return res.json({
-        ...result,
+        ...withPayableTotals(result),
         id: result._id?.toString(),
       });
     } catch (error) {
@@ -874,11 +883,12 @@ router.post(
       }
       const printUrl = `${appUrl.replace(/\/$/, "")}/view/invoice/${shareToken}`;
       const dealerLabel = invoice.dealerName || "Customer";
+      const payable = withPayableTotals(invoice);
       const amount = new Intl.NumberFormat("en-IN", {
         style: "currency",
         currency: "INR",
         maximumFractionDigits: 2,
-      }).format(invoice.totalAmount);
+      }).format(payable.totalAmount);
 
       const customMessage = message?.trim()
         ? `<p>${String(message).replace(/\n/g, "<br/>")}</p>`

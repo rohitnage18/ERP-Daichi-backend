@@ -6,7 +6,7 @@ const router = Router();
 
 router.use(requireAuth);
 
-const inventoryRoles = requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS");
+const inventoryRoles = requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS", "ACCOUNT");
 
 interface InventoryItemDoc {
   _id?: ObjectId;
@@ -122,15 +122,28 @@ router.patch(
       const db = await getDb();
       const inventoryCol = db.collection<InventoryItemDoc>("inventoryItems");
       const productsCol = db.collection<Product>("products");
-      const pid = new ObjectId(productId);
+      const oid = new ObjectId(productId);
 
-      const product = await productsCol.findOne({ _id: pid });
+      let product = await productsCol.findOne({ _id: oid });
+      let item = await inventoryCol.findOne({ productId: oid });
+
+      if (!product) {
+        item = await inventoryCol.findOne({ _id: oid });
+        if (item) {
+          product = await productsCol.findOne({ _id: item.productId });
+        }
+      }
+
       if (!product) {
         return res.status(404).json({ error: "Product not found" });
       }
 
-      let item = await inventoryCol.findOne({ productId: pid });
+      const pid = product._id!;
       const now = new Date();
+
+      if (!item) {
+        item = await inventoryCol.findOne({ productId: pid });
+      }
 
       if (!item) {
         const insert = await inventoryCol.insertOne({
@@ -180,7 +193,7 @@ router.patch(
       const updated = await inventoryCol.findOne({ _id: itemId });
       return res.json({
         id: updated?._id?.toString(),
-        productId,
+        productId: pid.toString(),
         quantity: updated?.quantity ?? 0,
         stockRemaining: updated?.quantity ?? 0,
         reorderLevel: updated?.reorderLevel ?? 10,
