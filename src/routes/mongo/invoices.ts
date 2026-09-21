@@ -5,7 +5,7 @@ import { getDb, Invoice, Order, Dealer, Product, DaichiDealer, ObjectId } from "
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { sendEmail } from "../../lib/email";
 import { amountToWords, payableInvoiceTotals, getStateCodeFromGSTIN, getStateNameFromCode, getUQCCode } from "../../lib/utils";
-import { applyInvoiceDeduction, reverseInvoiceDeduction, StockError } from "../../lib/inventory-stock";
+import { applyInvoiceDeduction, reverseInvoiceDeduction, applyInvoiceStockEdit, StockError } from "../../lib/inventory-stock";
 
 /**
  * Resolve lotSize / Units-per-Case for an invoice line from the product master.
@@ -769,6 +769,7 @@ router.patch(
         "irnDate",
         "termsAndConditions",
         "bankDetails",
+        "items",
       ];
       
       const updateData: Record<string, unknown> = { updatedAt: new Date() };
@@ -796,6 +797,20 @@ router.patch(
         });
         updateData.stockDeducted = false;
       }
+
+      if (
+        Array.isArray(req.body.items) &&
+        current.stockDeducted &&
+        current.status !== "CANCELLED" &&
+        updateData.status !== "CANCELLED"
+      ) {
+        await applyInvoiceStockEdit(db, current.items || [], req.body.items, {
+          invoiceId: current._id,
+          invoiceNumber: current.invoiceNumber,
+          userId: req.user!.id,
+          userName: req.user!.email,
+        });
+      }
       
       const result = await invoicesCol.findOneAndUpdate(
         { _id: new ObjectId(id) },
@@ -812,6 +827,9 @@ router.patch(
         id: result._id?.toString(),
       });
     } catch (error) {
+      if (error instanceof StockError) {
+        return res.status(error.status).json({ error: error.message });
+      }
       console.error("Error updating invoice:", error);
       return res.status(500).json({ error: "Failed to update invoice" });
     }
@@ -839,12 +857,26 @@ router.post(
 
       if (!existing.stockDeducted) {
         try {
+          if (existing.orderId) {
+            const order = await db.collection("orders").findOne({ _id: existing.orderId });
+            if (order && (order as { stockReserved?: boolean }).stockReserved) {
+              const { releaseStockReservation } = await import("../../lib/inventory-reservation");
+              await releaseStockReservation(db, existing.items || [], existing.orderId, {
+                userId: req.user!.id,
+                userName: req.user!.email,
+              });
+              await db.collection("orders").updateOne(
+                { _id: existing.orderId },
+                { $set: { stockReserved: false, updatedAt: new Date() } }
+              );
+            }
+          }
           await applyInvoiceDeduction(db, existing.items || [], {
             invoiceId: existing._id,
             invoiceNumber: existing.invoiceNumber,
             userId: req.user!.id,
             userName: req.user!.email,
-            type: "invoice_deduction",
+            type: "INVOICE",
           });
         } catch (error) {
           if (error instanceof StockError) {

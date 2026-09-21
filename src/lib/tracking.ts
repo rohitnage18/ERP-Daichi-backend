@@ -3,8 +3,10 @@ import { istMinutesOfDay } from "./dates-ist";
 /** Field tracking window in IST. Inclusive start, exclusive end. */
 export const TRACKING_START_MINUTES = 9 * 60;
 export const TRACKING_END_MINUTES = 20 * 60;
-export const TRACKING_INTERVAL_MS = 3 * 60 * 1000;
-export const TRACKING_ANOMALY_MINUTES = 15;
+/** Spec: GPS ping every ~30 minutes during working hours. */
+export const TRACKING_INTERVAL_MS = 30 * 60 * 1000;
+/** Spec: flag no-movement if no ping beyond ~2 hours. */
+export const TRACKING_ANOMALY_MINUTES = 120;
 
 export function isWithinWorkingHours(now = new Date()): boolean {
   const mins = istMinutesOfDay(now);

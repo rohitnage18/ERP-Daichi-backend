@@ -136,6 +136,7 @@ export function validateActivity(input: DailyActivityInput, opts: { isAdmin: boo
   if (data.placesToVisit.length === 0) errors.push("Add at least one place to visit.");
   if (asMoney(input.salesTarget) == null) errors.push("Sales target must be a number.");
   if (asMoney(input.collectionTarget) == null) errors.push("Collection target must be a number.");
+  if (data.openingOdometer == null) errors.push("Opening odometer reading is required.");
   return { errors, dateKey: key, reportDate: key ? dayStartIST(dateRaw) : null, data };
 }
 
@@ -159,6 +160,15 @@ export function validateClosing(
   return { errors, data };
 }
 
+export function makeReportCode(prefix: "DAR" | "DCR", reportDate: Date, salespersonId: string): string {
+  const key = dateKeyIST(reportDate).replace(/-/g, "");
+  const short = salespersonId.slice(-6).toUpperCase();
+  return `${prefix}-${key}-${short}`;
+}
+
 export const MISSING_ACTIVITY_MESSAGE = "Submit today's Daily Activity Report first.";
-export const ACTIVITY_EXISTS_MESSAGE = "Today's Daily Activity Report already exists. Update it instead.";
+export const ACTIVITY_EXISTS_MESSAGE =
+  "Today's Daily Activity Report is already submitted and locked. Submit the Closing Report at end of day.";
 export const CLOSING_EXISTS_MESSAGE = "Today's Daily Closing Report is already submitted.";
+export const VISIT_REQUIRES_ACTIVITY_MESSAGE =
+  "Submit today's Daily Activity Report before logging field visits.";

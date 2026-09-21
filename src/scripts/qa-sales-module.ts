@@ -216,6 +216,22 @@ async function main() {
   );
 
   // ---- Level 2 Activity ----
+  const visitBeforeDar = await call("POST", "/api/visits", sales.token, {
+    purpose: "FOLLOW_UP",
+    prospectName: `Pre-DAR ${MARK}`,
+    notes: "should block",
+  });
+  rec(
+    "2.visit-requires-dar",
+    "Field visit blocked until DAR submitted",
+    "POST /api/visits before activity",
+    "400 Submit today's Daily Activity Report…",
+    `${visitBeforeDar.status} ${visitBeforeDar.json?.error || ""}`,
+    visitBeforeDar.status === 400 && /Activity Report/i.test(visitBeforeDar.json?.error || "")
+      ? "Pass"
+      : "Fail"
+  );
+
   const missingAct = await call("POST", "/api/daily-reports/activity", sales.token, {
     reportDate: todayKey,
     placesToVisit: [],
@@ -271,8 +287,8 @@ async function main() {
     "Submit valid Daily Activity Report",
     "POST /api/daily-reports/activity as sales",
     "201/200 saved with salesperson, date, all fields, timestamp, money rounded to 2dp",
-    `${act1.status} id=${saved?.id} target=${saved?.activity?.salesTarget} submittedAt=${saved?.activity?.submittedAt}`,
-    fieldsOk ? "Pass" : "Fail"
+    `${act1.status} id=${saved?.id} darId=${saved?.darId} target=${saved?.activity?.salesTarget} submittedAt=${saved?.activity?.submittedAt}`,
+    fieldsOk && saved?.darId ? "Pass" : "Fail"
   );
 
   const act2 = await call("POST", "/api/daily-reports/activity", sales.token, {
@@ -281,14 +297,17 @@ async function main() {
     placesToVisit: [`Pune ${MARK}`, "Updated place"],
   });
   const todayDoc = await call("GET", "/api/daily-reports/today", sales.token);
-  const stillOne = todayDoc.json?.id === saved?.id || todayDoc.json?.id === act2.json?.id;
+  const stillOne = todayDoc.json?.id === saved?.id;
+  const locked = act2.status === 409;
   rec(
     "2.second",
-    "Second activity same date",
-    "POST activity again before closing",
-    "Updates existing (no second document); original spec: edit until closed",
-    `${act2.status} updated=${act2.json?.updated} sameId=${stillOne} target=${act2.json?.activity?.salesTarget}`,
-    act2.status < 300 && stillOne && act2.json?.activity?.salesTarget === 51000 ? "Pass" : "Fail"
+    "Second activity same date is locked",
+    "POST activity again after first submit",
+    "409 locked; same DAR id retained; plan not overwritten",
+    `${act2.status} darId=${todayDoc.json?.darId || saved?.darId} sameId=${stillOne} target=${todayDoc.json?.activity?.salesTarget}`,
+    locked && stillOne && todayDoc.json?.activity?.salesTarget === 50000.46 && todayDoc.json?.darId
+      ? "Pass"
+      : "Fail"
   );
 
   const adminView = await call(
@@ -367,12 +386,47 @@ async function main() {
     "3.submit",
     "Submit valid closing after activity",
     "POST /api/daily-reports/closing",
-    "201 linked same salesperson+date, all fields stored",
-    `${close1.status} sales=${c?.salesAchievement} dealer=${c?.dealersVisited?.[0]?.dealerId || c?.dealersVisited?.[0]?.dealerName} other=${c?.otherWork}`,
+    "201 linked same salesperson+date, DCR id, all fields stored",
+    `${close1.status} dcrId=${close1.json?.dcrId} sales=${c?.salesAchievement} dealer=${c?.dealersVisited?.[0]?.dealerId || c?.dealersVisited?.[0]?.dealerName} other=${c?.otherWork}`,
     close1.status < 300 &&
+      close1.json?.dcrId &&
       c?.salesAchievement === 45000.99 &&
       c?.farmersVisited?.[0]?.name === "Ramesh" &&
       String(c?.otherWork || "").includes(MARK)
+      ? "Pass"
+      : "Fail"
+  );
+
+  const selfApprove = await call("POST", `/api/daily-reports/${saved?.id}/approve`, sales.token, {
+    section: "activity",
+    status: "APPROVED",
+  });
+  rec(
+    "3.self-approve-blocked",
+    "Salesperson cannot approve own DAR",
+    "POST approve as sales on own report",
+    "403",
+    `${selfApprove.status} ${selfApprove.json?.error || ""}`,
+    selfApprove.status === 403 || selfApprove.status === 401 ? "Pass" : "Fail"
+  );
+  const mgrApprove = await call("POST", `/api/daily-reports/${saved?.id}/approve`, admin.token, {
+    section: "activity",
+    status: "APPROVED",
+  });
+  const mgrApproveDcr = await call("POST", `/api/daily-reports/${saved?.id}/approve`, admin.token, {
+    section: "closing",
+    status: "APPROVED",
+  });
+  rec(
+    "3.manager-approve",
+    "Manager approves DAR and DCR",
+    "POST /api/daily-reports/:id/approve",
+    "200 APPROVED for both sections",
+    `dar=${mgrApprove.json?.activityApproval?.status} dcr=${mgrApproveDcr.json?.closingApproval?.status}`,
+    mgrApprove.status === 200 &&
+      mgrApprove.json?.activityApproval?.status === "APPROVED" &&
+      mgrApproveDcr.status === 200 &&
+      mgrApproveDcr.json?.closingApproval?.status === "APPROVED"
       ? "Pass"
       : "Fail"
   );
@@ -766,19 +820,21 @@ async function main() {
         "8.finalize-deduct",
         "Finalize deducts exact qty + ledger",
         `finalize ${draft.json?.id}`,
-        `stock ${qtyBefore} -> ${qtyBefore - 1}, invoice_deduction ledger`,
+        `stock ${qtyBefore} -> ${qtyBefore - 1}, invoice deduction ledger`,
         `${fin.status} ${fin.json?.error || fin.json?.status} qty ${qtyBefore}->${qtyAfterFin}`,
         fin.status === 200 && qtyAfterFin === qtyBefore - 1 ? "Pass" : "Fail"
       );
       const ledger = await call("GET", "/api/inventory/movements", logistics.token);
       const led = asArray(ledger.json).find(
-        (m: any) => m.invoiceId === draft.json?.id && m.type === "invoice_deduction"
+        (m: any) =>
+          m.invoiceId === draft.json?.id &&
+          (m.type === "INVOICE" || m.type === "invoice_deduction")
       );
       rec(
         "8.ledger-deduction",
-        "Ledger traces invoice_deduction to invoice id",
+        "Ledger traces invoice deduction to invoice id",
         "GET /api/inventory/movements",
-        "type=invoice_deduction invoiceId set qty=-1",
+        "type=INVOICE (or legacy invoice_deduction) invoiceId set qty=-1",
         led ? `type=${led.type} qty=${led.quantity} inv=${led.invoiceId}` : "missing",
         led && led.quantity === -1 ? "Pass" : "Fail"
       );
@@ -807,7 +863,9 @@ async function main() {
           ?.quantity
       );
       const rev = asArray((await call("GET", "/api/inventory/movements", logistics.token)).json).find(
-        (m: any) => m.invoiceId === draft.json?.id && m.type === "invoice_reversal"
+        (m: any) =>
+          m.invoiceId === draft.json?.id &&
+          (m.type === "INVOICE_CANCEL" || m.type === "invoice_reversal")
       );
       rec(
         "8.cancel-restore",

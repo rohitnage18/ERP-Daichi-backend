@@ -104,8 +104,25 @@ router.get("/visits", async (req, res) => {
 router.post("/visits", async (req, res) => {
   try {
     const db = await getDb();
-    const visitsCol = db.collection<SalesVisit>("salesVisits");
     const data = req.body;
+
+    // Spec: DAR must be submitted before field visits.
+    if (req.user!.role === "SALES_MARKETING") {
+      const reports = db.collection("dailyReports");
+      const today = dayStartIST(new Date());
+      const dar = await reports.findOne({
+        $or: [{ salespersonId: new ObjectId(req.user!.id) }, { salespersonId: req.user!.id }],
+        reportDate: today,
+        activity: { $exists: true },
+      });
+      if (!dar?.activity) {
+        return res.status(400).json({
+          error: "Submit today's Daily Activity Report before logging field visits.",
+        });
+      }
+    }
+
+    const visitsCol = db.collection<SalesVisit>("salesVisits");
 
     const visit: SalesVisit = {
       visitDate: new Date(data.visitDate || Date.now()),

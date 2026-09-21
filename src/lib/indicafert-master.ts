@@ -225,7 +225,8 @@ export const INDICAFERT_MASTER: MasterProduct[] = [
     category: "Secondary Nutrients",
     productName: "Magnesium Sulphate [MgSO4 9.6%]",
     hsnCode: "28332100",
-    packings: [{ unitSize: 25, unit: "kg", unitsPerCase: 1, productCode: "DI-SEC-024-25KG" }],
+    // Tally Finished Goods: base unit KG, 25 KG per case
+    packings: [{ unitSize: 25, unit: "kg", unitsPerCase: 25, productCode: "DI-SEC-024-25KG" }],
   },
   {
     category: "Secondary Nutrients",

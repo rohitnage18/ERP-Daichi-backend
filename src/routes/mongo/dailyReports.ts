@@ -11,6 +11,7 @@ import {
   ACTIVITY_EXISTS_MESSAGE,
   CLOSING_EXISTS_MESSAGE,
   MISSING_ACTIVITY_MESSAGE,
+  makeReportCode,
   validateActivity,
   validateClosing,
 } from "../../lib/daily-reports";
@@ -48,6 +49,8 @@ function serialize(doc: DailyReport) {
   return {
     ...doc,
     id: doc._id?.toString(),
+    darId: doc.darId || null,
+    dcrId: doc.dcrId || null,
     salespersonId: doc.salespersonId?.toString(),
     hasActivity: Boolean(doc.activity),
     hasClosing: Boolean(doc.closing),
@@ -201,11 +204,19 @@ router.post("/activity", async (req, res) => {
     if (existing?.closing) {
       return res.status(409).json({ error: "Today's report is already closed and cannot be edited." });
     }
+    // Spec: DAR is locked after first submit (before field visits).
+    if (existing?.activity) {
+      return res.status(409).json({ error: ACTIVITY_EXISTS_MESSAGE });
+    }
 
+    const darId = makeReportCode("DAR", parsed.reportDate!, req.user!.id);
     const activity = {
-      submittedAt: existing?.activity?.submittedAt || new Date(),
+      submittedAt: new Date(),
       ...parsed.data,
       openingOdometer: parsed.data.openingOdometer,
+    };
+    const activityApproval = {
+      status: "SUBMITTED" as const,
     };
 
     if (existing) {
@@ -213,7 +224,9 @@ router.post("/activity", async (req, res) => {
         { _id: existing._id },
         {
           $set: {
+            darId,
             activity,
+            activityApproval,
             salespersonName: actorName(req),
             zoneName: req.user!.zoneName || existing.zoneName,
             updatedAt: new Date(),
@@ -221,7 +234,7 @@ router.post("/activity", async (req, res) => {
         },
         { returnDocument: "after" }
       );
-      return res.json({ ...serialize(updated!), updated: true });
+      return res.status(201).json(serialize(updated!));
     }
 
     const doc: DailyReport = {
@@ -229,7 +242,9 @@ router.post("/activity", async (req, res) => {
       salespersonName: actorName(req),
       reportDate: parsed.reportDate!,
       zoneName: req.user!.zoneName || undefined,
+      darId,
       activity,
+      activityApproval,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -281,10 +296,12 @@ router.post("/closing", async (req, res) => {
       submittedAt: new Date(),
       ...parsed.data,
     };
+    const dcrId = makeReportCode("DCR", reportDate, req.user!.id);
+    const closingApproval = { status: "SUBMITTED" as const };
 
     const updated = await col.findOneAndUpdate(
       { _id: existing._id, closing: { $exists: false } },
-      { $set: { closing, updatedAt: new Date() } },
+      { $set: { closing, dcrId, closingApproval, updatedAt: new Date() } },
       { returnDocument: "after" }
     );
     if (!updated) {
@@ -294,6 +311,58 @@ router.post("/closing", async (req, res) => {
   } catch (error) {
     console.error("Daily closing POST error:", error);
     return res.status(500).json({ error: "Failed to save Daily Closing Report" });
+  }
+});
+
+/** Sales Manager / Admin: approve or reject DAR or DCR section. */
+router.post("/:id/approve", requireRole("MANAGEMENT_ADMIN"), async (req, res) => {
+  try {
+    const section = String(req.body?.section || "").toLowerCase();
+    if (section !== "activity" && section !== "closing") {
+      return res.status(400).json({ error: "section must be activity or closing" });
+    }
+    const decision = String(req.body?.status || "APPROVED").toUpperCase();
+    if (decision !== "APPROVED" && decision !== "REJECTED") {
+      return res.status(400).json({ error: "status must be APPROVED or REJECTED" });
+    }
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "Invalid report id" });
+    }
+
+    const db = await getDb();
+    const col = db.collection<DailyReport>("dailyReports");
+    const doc = await col.findOne({ _id: new ObjectId(req.params.id) });
+    if (!doc) return res.status(404).json({ error: "Report not found" });
+
+    if (section === "activity" && !doc.activity) {
+      return res.status(400).json({ error: "No DAR to approve" });
+    }
+    if (section === "closing" && !doc.closing) {
+      return res.status(400).json({ error: "No DCR to approve" });
+    }
+
+    // Spec: salesperson cannot approve own reports (managers only; also block same user).
+    if (doc.salespersonId?.toString() === req.user!.id) {
+      return res.status(403).json({ error: "Cannot approve your own daily report" });
+    }
+
+    const approval = {
+      status: decision as "APPROVED" | "REJECTED",
+      byId: new ObjectId(req.user!.id),
+      byName: actorName(req),
+      at: new Date(),
+      note: typeof req.body?.note === "string" ? req.body.note.slice(0, 500) : undefined,
+    };
+    const field = section === "activity" ? "activityApproval" : "closingApproval";
+    const updated = await col.findOneAndUpdate(
+      { _id: doc._id },
+      { $set: { [field]: approval, updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+    return res.json(serialize(updated!));
+  } catch (error) {
+    console.error("Daily report approve error:", error);
+    return res.status(500).json({ error: "Failed to approve daily report" });
   }
 });
 

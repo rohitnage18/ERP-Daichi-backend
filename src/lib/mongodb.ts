@@ -399,6 +399,8 @@ export interface Order {
   totalAmount: number;
   status: "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "PROCESSING" | "DISPATCHED" | "DELIVERED" | "CANCELLED";
   rejectionReason?: string;
+  /** True when inventory was reserved on approval */
+  stockReserved?: boolean;
   createdById: ObjectId;
   createdByName?: string;
   approvedById?: ObjectId;
@@ -922,14 +924,28 @@ export interface DailyReportClosing {
 }
 
 /** Parent daily report: one document per salesperson per date, with activity + closing sections. */
+export interface DailyReportApproval {
+  status: "SUBMITTED" | "APPROVED" | "REJECTED";
+  byId?: ObjectId;
+  byName?: string;
+  at?: Date;
+  note?: string;
+}
+
 export interface DailyReport {
   _id?: ObjectId;
+  /** Human-readable Daily Activity Report id, e.g. DAR-20260921-EA938F */
+  darId?: string;
+  /** Human-readable Daily Closing Report id */
+  dcrId?: string;
   salespersonId: ObjectId;
   salespersonName: string;
   reportDate: Date;
   zoneName?: string;
   activity?: DailyReportActivity;
   closing?: DailyReportClosing;
+  activityApproval?: DailyReportApproval;
+  closingApproval?: DailyReportApproval;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -939,11 +955,24 @@ export interface InventoryMovement {
   productId: ObjectId;
   sku?: string;
   productName?: string;
+  /** Signed base-unit change (Nos, or KG for Magnesium Sulphate). */
   quantity: number;
-  type: "invoice_deduction" | "invoice_reversal" | "upload" | "manual_adjust" | "dispatch_deduction";
+  type:
+    | "OPENING"
+    | "INWARD"
+    | "INVOICE"
+    | "INVOICE_CANCEL"
+    | "ADJUSTMENT"
+    // Legacy aliases (older deployments)
+    | "invoice_deduction"
+    | "invoice_reversal"
+    | "upload"
+    | "manual_adjust"
+    | "dispatch_deduction";
   invoiceId?: ObjectId;
   invoiceNumber?: string;
   uploadId?: ObjectId;
+  referenceId?: string;
   warehouseCode?: string;
   userId?: ObjectId;
   userName?: string;

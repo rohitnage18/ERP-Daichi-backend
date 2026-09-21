@@ -2,6 +2,8 @@ import { Router } from "express";
 import { getDb, Order, OrderItem, Product, Dispatch, Invoice, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { findDealerById } from "../../lib/dealer-lookup";
+import { reserveStockForOrder, releaseStockReservation } from "../../lib/inventory-reservation";
+import { StockError } from "../../lib/inventory-stock";
 
 const router = Router();
 
@@ -387,11 +389,23 @@ router.post(
         return res.status(400).json({ error: "Invalid order ID" });
       }
 
+      const existing = await ordersCol.findOne({ _id: new ObjectId(id), status: "PENDING_APPROVAL" });
+      if (!existing) {
+        return res.status(404).json({ error: "Order not found or not pending approval" });
+      }
+
+      // Spec: block / reserve inventory when allocated to sales order.
+      await reserveStockForOrder(db, existing.items || [], existing._id!, {
+        userId: req.user!.id,
+        userName: req.user!.email,
+      });
+
       const result = await ordersCol.findOneAndUpdate(
         { _id: new ObjectId(id), status: "PENDING_APPROVAL" },
         {
           $set: {
             status: "APPROVED",
+            stockReserved: true,
             approvedById: new ObjectId(req.user!.id),
             approvedByName: req.user!.email,
             approvedAt: new Date(),
@@ -402,6 +416,10 @@ router.post(
       );
 
       if (!result) {
+        await releaseStockReservation(db, existing.items || [], existing._id!, {
+          userId: req.user!.id,
+          userName: req.user!.email,
+        }).catch(() => undefined);
         return res.status(404).json({ error: "Order not found or not pending approval" });
       }
 
@@ -410,6 +428,9 @@ router.post(
         id: result._id?.toString(),
       });
     } catch (error) {
+      if (error instanceof StockError) {
+        return res.status(error.status).json({ error: error.message });
+      }
       console.error("Error approving order:", error);
       return res.status(500).json({ error: "Failed to approve order" });
     }
@@ -431,11 +452,27 @@ router.post(
         return res.status(400).json({ error: "Invalid order ID" });
       }
 
+      const existing = await ordersCol.findOne({ _id: new ObjectId(id) });
+      if (!existing) {
+        return res.status(404).json({ error: "Order not found" });
+      }
+      if (existing.status !== "PENDING_APPROVAL" && existing.status !== "APPROVED") {
+        return res.status(400).json({ error: "Order cannot be cancelled from this status" });
+      }
+
+      if (existing.stockReserved && existing.status === "APPROVED") {
+        await releaseStockReservation(db, existing.items || [], existing._id!, {
+          userId: req.user!.id,
+          userName: req.user!.email,
+        });
+      }
+
       const result = await ordersCol.findOneAndUpdate(
-        { _id: new ObjectId(id), status: "PENDING_APPROVAL" },
+        { _id: new ObjectId(id) },
         {
           $set: {
             status: "CANCELLED",
+            stockReserved: false,
             rejectionReason: reason || "Rejected by admin",
             updatedAt: new Date(),
           },
@@ -443,15 +480,14 @@ router.post(
         { returnDocument: "after" }
       );
 
-      if (!result) {
-        return res.status(404).json({ error: "Order not found or not pending approval" });
-      }
-
       return res.json({
         ...result,
-        id: result._id?.toString(),
+        id: result?._id?.toString(),
       });
     } catch (error) {
+      if (error instanceof StockError) {
+        return res.status(error.status).json({ error: error.message });
+      }
       console.error("Error rejecting order:", error);
       return res.status(500).json({ error: "Failed to reject order" });
     }

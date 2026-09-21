@@ -38,6 +38,7 @@ describe("Daily Activity Report validation", () => {
         placesToVisit: ["Pune"],
         salesTarget: 1,
         collectionTarget: 1,
+        openingOdometer: 100,
       },
       { isAdmin: false, now: today }
     );
@@ -51,6 +52,7 @@ describe("Daily Activity Report validation", () => {
         placesToVisit: ["Pune"],
         salesTarget: 1,
         collectionTarget: 0,
+        openingOdometer: 100,
       },
       { isAdmin: true, now: today }
     );
@@ -69,7 +71,27 @@ describe("Daily Activity Report validation", () => {
 describe("Daily Closing Report validation", () => {
   it("blocks when activity is missing (message constant)", () => {
     assert.equal(MISSING_ACTIVITY_MESSAGE, "Submit today's Daily Activity Report first.");
-    assert.match(ACTIVITY_EXISTS_MESSAGE, /already exists/i);
+    assert.match(ACTIVITY_EXISTS_MESSAGE, /already submitted and locked/i);
+  });
+
+  it("requires opening odometer on activity", () => {
+    const today = new Date("2026-09-15T08:00:00.000+05:30");
+    const result = validateActivity(
+      {
+        reportDate: "2026-09-15",
+        placesToVisit: ["Pune"],
+        salesTarget: 1,
+        collectionTarget: 1,
+      },
+      { isAdmin: false, now: today }
+    );
+    assert.ok(result.errors.some((e) => /Opening odometer/i.test(e)));
+  });
+
+  it("makeReportCode formats DAR/DCR ids", async () => {
+    const { makeReportCode } = await import("./daily-reports");
+    const id = makeReportCode("DAR", new Date("2026-09-21T00:00:00.000+05:30"), "abcdef123456");
+    assert.equal(id, "DAR-20260921-123456");
   });
 
   it("accepts a complete closing report", () => {

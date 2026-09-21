@@ -2,6 +2,9 @@ import { Router } from "express";
 import { getDb, Product, InventoryMovement, InventoryUploadLog, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { parseSpreadsheet, partitionUploadRows } from "../../lib/inventory-upload";
+import { applyInwardMovement, StockError } from "../../lib/inventory-stock";
+import { transferWarehouseStock } from "../../lib/inventory-reservation";
+import { displayCases, grandTotalCases, normalizeUnitsPerCase } from "../../lib/stock-math";
 
 const router = Router();
 
@@ -61,44 +64,111 @@ router.get("/", inventoryRoles, async (_req, res) => {
     const products = await productsCol.find({ _id: { $in: productIds } }).toArray();
     const productMap = new Map(products.map((p) => [p._id!.toString(), p]));
 
-    return res.json(
-      items.map((item) => {
-        const product = productMap.get(item.productId.toString());
-        return {
-          id: item._id?.toString(),
-          productId: item.productId.toString(),
-          quantity: item.quantity,
-          stockRemaining: item.quantity,
-          reorderLevel: item.reorderLevel,
-          warehouseCode: item.warehouseCode,
-          lastUpdated: item.lastUpdated,
-          lowStock: item.quantity <= item.reorderLevel,
-          product: product
-            ? {
-                id: product._id?.toString(),
-                productCode: product.productCode,
-                name: product.name,
-                packingSize: product.packingSize,
-                packingType: product.packingType,
-                packingUnit: product.packingUnit,
-                unitOfMeasure: product.unitOfMeasure,
-                categoryName: product.categoryName,
-                subCategory: {
-                  name: product.subCategoryName || product.categoryName || "General",
-                },
-              }
-            : {
-                productCode: "",
-                name: "Unknown",
-                unitOfMeasure: "Nos",
-                subCategory: { name: "General" },
+    const rows = items.map((item) => {
+      const product = productMap.get(item.productId.toString());
+      const reserved = Number((item as { reservedQuantity?: number }).reservedQuantity || 0);
+      const unitsPerCase = normalizeUnitsPerCase(product?.unitsPerAlternate, 1);
+      const uom = (product?.unitOfMeasure || "Nos").toLowerCase();
+      const baseUnit = uom === "kg" ? "KG" : "Nos";
+      const cases = displayCases(item.quantity, unitsPerCase);
+      return {
+        id: item._id?.toString(),
+        productId: item.productId.toString(),
+        quantity: item.quantity,
+        reservedQuantity: reserved,
+        availableQuantity: Math.max(0, item.quantity - reserved),
+        stockRemaining: Math.max(0, item.quantity - reserved),
+        displayCases: cases,
+        unitsPerCase,
+        baseUnit,
+        reorderLevel: item.reorderLevel,
+        warehouseCode: item.warehouseCode,
+        lastUpdated: item.lastUpdated,
+        lowStock: item.quantity <= item.reorderLevel,
+        zeroStock: item.quantity <= 0,
+        product: product
+          ? {
+              id: product._id?.toString(),
+              productCode: product.productCode,
+              name: product.name,
+              packingSize: product.packingSize,
+              packingType: product.packingType,
+              packingUnit: product.packingUnit,
+              unitOfMeasure: product.unitOfMeasure,
+              unitsPerAlternate: product.unitsPerAlternate,
+              categoryName: product.categoryName,
+              subCategory: {
+                name: product.subCategoryName || product.categoryName || "General",
               },
-        };
-      })
-    );
+            }
+          : {
+              productCode: "",
+              name: "Unknown",
+              unitOfMeasure: "Nos",
+              subCategory: { name: "General" },
+            },
+      };
+    });
+
+    return res.json({
+      items: rows,
+      grandTotalCases: grandTotalCases(
+        rows.map((r) => ({ baseQty: r.quantity, unitsPerCase: r.unitsPerCase }))
+      ),
+    });
   } catch (error) {
     console.error("Error fetching inventory:", error);
     return res.status(500).json({ error: "Failed to fetch inventory" });
+  }
+});
+
+/** Min / max / aging snapshot for inventory manager reports. */
+router.get("/levels", inventoryRoles, async (_req, res) => {
+  try {
+    await ensureInventoryForProducts();
+    const db = await getDb();
+    const items = await db.collection<InventoryItemDoc>("inventoryItems").find({}).toArray();
+    const products = await db
+      .collection<Product>("products")
+      .find({ _id: { $in: items.map((i) => i.productId) } })
+      .toArray();
+    const productMap = new Map(products.map((p) => [p._id!.toString(), p]));
+    const now = Date.now();
+    const rows = items.map((item) => {
+      const product = productMap.get(item.productId.toString());
+      const reserved = Number((item as { reservedQuantity?: number }).reservedQuantity || 0);
+      const ageDays = item.lastUpdated
+        ? Math.floor((now - new Date(item.lastUpdated).getTime()) / (24 * 60 * 60 * 1000))
+        : null;
+      const min = item.reorderLevel ?? 0;
+      const max = Math.max(min * 5, min + 50);
+      return {
+        productId: item.productId.toString(),
+        sku: product?.productCode,
+        name: product?.name,
+        warehouseCode: item.warehouseCode,
+        quantity: item.quantity,
+        reservedQuantity: reserved,
+        availableQuantity: Math.max(0, item.quantity - reserved),
+        minLevel: min,
+        maxLevel: max,
+        belowMin: item.quantity <= min,
+        aboveMax: item.quantity > max,
+        ageDays,
+        batchNumber: (product as { batchNumber?: string } | undefined)?.batchNumber || null,
+      };
+    });
+    return res.json({
+      items: rows,
+      summary: {
+        belowMin: rows.filter((r) => r.belowMin).length,
+        aboveMax: rows.filter((r) => r.aboveMax).length,
+        agingOver90: rows.filter((r) => (r.ageDays ?? 0) >= 90).length,
+      },
+    });
+  } catch (error) {
+    console.error("Inventory levels error:", error);
+    return res.status(500).json({ error: "Failed to build inventory levels report" });
   }
 });
 
@@ -143,6 +213,71 @@ router.get("/uploads", inventoryRoles, async (_req, res) => {
   } catch (error) {
     console.error("Inventory uploads GET error:", error);
     return res.status(500).json({ error: "Failed to fetch upload log" });
+  }
+});
+
+/** Add inward stock (Case or Nos/KG). Creates an INWARD ledger movement. */
+router.post("/inward", inventoryRoles, async (req, res) => {
+  try {
+    const db = await getDb();
+    const productId = String(req.body?.productId || "");
+    const quantity = Number(req.body?.quantity);
+    const unit = String(req.body?.unit || "NOS");
+    const remarks = typeof req.body?.remarks === "string" ? req.body.remarks : undefined;
+    const movementDate = req.body?.date ? new Date(req.body.date) : new Date();
+    if (!ObjectId.isValid(productId)) {
+      return res.status(400).json({ error: "productId is required" });
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return res.status(400).json({ error: "quantity must be a positive number" });
+    }
+    const result = await applyInwardMovement(db, {
+      productId,
+      quantity,
+      unit,
+      remarks,
+      movementDate,
+      type: "INWARD",
+      userId: req.user!.id,
+      userName: req.user!.email,
+      warehouseCode: typeof req.body?.warehouseCode === "string" ? req.body.warehouseCode : undefined,
+    });
+    return res.status(201).json({
+      ok: true,
+      productId,
+      baseQtyAdded: result.baseQty,
+      quantity: result.quantity,
+      type: "INWARD",
+    });
+  } catch (error) {
+    if (error instanceof StockError) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    console.error("Inventory inward error:", error);
+    return res.status(500).json({ error: "Failed to add inward stock" });
+  }
+});
+
+/** Transfer stock between warehouses. */
+router.post("/transfer", inventoryRoles, async (req, res) => {
+  try {
+    const db = await getDb();
+    const result = await transferWarehouseStock(db, {
+      productId: String(req.body?.productId || ""),
+      quantity: Number(req.body?.quantity),
+      fromWarehouse: String(req.body?.fromWarehouse || ""),
+      toWarehouse: String(req.body?.toWarehouse || ""),
+      remarks: typeof req.body?.remarks === "string" ? req.body.remarks : undefined,
+      userId: req.user!.id,
+      userName: req.user!.email,
+    });
+    return res.status(201).json({ ok: true, ...result });
+  } catch (error) {
+    if (error instanceof StockError) {
+      return res.status(error.status).json({ error: error.message });
+    }
+    console.error("Inventory transfer error:", error);
+    return res.status(500).json({ error: "Failed to transfer stock" });
   }
 });
 
@@ -207,11 +342,11 @@ router.post("/upload", requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS"), 
         sku: product.productCode,
         productName: product.name,
         quantity: row.quantity,
-        type: "upload",
+        type: "ADJUSTMENT",
         warehouseCode: row.warehouseCode,
         userId: new ObjectId(req.user!.id),
         userName: req.user!.email,
-        notes: `Upload ${fileName} row ${row.row}`,
+        notes: `Upload ${fileName} row ${row.row} (set absolute qty)`,
         createdAt: now,
       });
       succeeded += 1;
@@ -350,7 +485,7 @@ router.patch(
           sku: product.productCode,
           productName: product.name,
           quantity: deltaApplied,
-          type: "manual_adjust",
+          type: "ADJUSTMENT",
           warehouseCode: updated?.warehouseCode,
           userId: new ObjectId(req.user!.id),
           userName: req.user!.email,

@@ -23,7 +23,7 @@ describe("invoice stock deduction rules", () => {
       new Map([[id.toString(), { quantity: 2, sku: "NPK-01", name: "NPK" }]])
     );
     assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.message, /Insufficient stock/);
+    if (!result.ok) assert.match(result.message, /Only 2 Nos available for NPK/);
   });
 
   it("allows when stock is sufficient", () => {
@@ -36,7 +36,7 @@ describe("invoice stock deduction rules", () => {
   });
 
   it("StockError is a 400-class business error", () => {
-    const err = new StockError("Insufficient stock. NPK-01: need 5, have 2");
+    const err = new StockError("Only 2 Nos available for NPK");
     assert.equal(err.status, 400);
   });
 });
@@ -78,10 +78,10 @@ describe("live tracking windows", () => {
     assert.equal(canAcceptLivePing({ consented: true, sessionActive: true, now: night }).ok, false);
   });
 
-  it("flags a 15+ minute gap as an anomaly", () => {
+  it("flags a 2+ hour gap as an anomaly", () => {
     const now = new Date("2026-09-15T12:00:00.000Z");
-    assert.equal(isLocationAnomaly(new Date(now.getTime() - 16 * 60 * 1000), now), true);
-    assert.equal(isLocationAnomaly(new Date(now.getTime() - 5 * 60 * 1000), now), false);
+    assert.equal(isLocationAnomaly(new Date(now.getTime() - 121 * 60 * 1000), now), true);
+    assert.equal(isLocationAnomaly(new Date(now.getTime() - 60 * 60 * 1000), now), false);
     assert.equal(isLocationAnomaly(null, now), true);
   });
 });
