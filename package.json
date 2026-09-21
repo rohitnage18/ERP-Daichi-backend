@@ -17,7 +17,7 @@
     "db:seed:field": "tsx prisma/seed-field.ts",
     "db:seed:mongo": "tsx src/scripts/seed-mongodb.ts",
     "db:seed:inventory": "tsx src/scripts/seed-inventory-sep2026.ts",
-    "test": "tsx --test src/lib/packing-math.test.ts src/lib/dealer-grade.test.ts src/lib/indicafert-master.test.ts src/lib/invoice-totals.test.ts"
+    "test": "tsx --test src/lib/packing-math.test.ts src/lib/dealer-grade.test.ts src/lib/indicafert-master.test.ts src/lib/invoice-totals.test.ts src/lib/daily-reports.test.ts src/lib/sales-module.test.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.15.0",

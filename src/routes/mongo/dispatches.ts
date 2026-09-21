@@ -2,7 +2,7 @@ import { Router } from "express";
 import { getDb, Dispatch, Invoice, Order, ObjectId } from "../../lib/mongodb";
 import { generateDispatchNumber } from "../../lib/utils";
 import { requireAuth, requireRole } from "../../middleware/auth";
-import { deductInventory } from "../../lib/inventory-stock";
+import { applyInvoiceDeduction, StockError } from "../../lib/inventory-stock";
 
 const router = Router();
 
@@ -68,6 +68,32 @@ router.post("/", requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS"), async 
         return res.status(400).json({ error: "Dispatch already exists for this invoice" });
       }
 
+      if (!invoice.stockDeducted) {
+        try {
+          await applyInvoiceDeduction(
+            db,
+            (invoice.items || []).map((it) => ({ productId: it.productId, quantity: it.quantity })),
+            {
+              invoiceId: invoice._id,
+              invoiceNumber: invoice.invoiceNumber,
+              userId: req.user!.id,
+              userName: req.user!.email,
+              type: "dispatch_deduction",
+            }
+          );
+        } catch (error) {
+          if (error instanceof StockError) {
+            return res.status(400).json({ error: error.message });
+          }
+          throw error;
+        }
+        await invoicesCol.updateOne(
+          { _id: new ObjectId(invoiceId) },
+          { $set: { stockDeducted: true } }
+        );
+        invoice.stockDeducted = true;
+      }
+
       const count = await dispatchesCol.countDocuments();
       dispatchPayload = {
         dispatchNumber: generateDispatchNumber(count + 1),
@@ -100,17 +126,6 @@ router.post("/", requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS"), async 
         }
       );
 
-      if (!invoice.stockDeducted) {
-        await deductInventory(
-          db,
-          (invoice.items || []).map((it) => ({ productId: it.productId, quantity: it.quantity }))
-        );
-        await invoicesCol.updateOne(
-          { _id: new ObjectId(invoiceId) },
-          { $set: { stockDeducted: true } }
-        );
-      }
-
       return res.status(201).json({
         ...dispatchPayload,
         id: result.insertedId.toString(),
@@ -130,6 +145,31 @@ router.post("/", requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS"), async 
     const existing = await dispatchesCol.findOne({ orderId: new ObjectId(orderId) });
     if (existing) {
       return res.status(400).json({ error: "Dispatch already exists for this order" });
+    }
+
+    const linkedInvoice = await invoicesCol.findOne({ orderId: order._id });
+    if (!linkedInvoice?.stockDeducted) {
+      try {
+        await applyInvoiceDeduction(
+          db,
+          (order.items || []).map((it) => ({ productId: it.productId, quantity: it.quantity })),
+          {
+            invoiceId: linkedInvoice?._id,
+            invoiceNumber: linkedInvoice?.invoiceNumber,
+            userId: req.user!.id,
+            userName: req.user!.email,
+            type: "dispatch_deduction",
+          }
+        );
+      } catch (error) {
+        if (error instanceof StockError) {
+          return res.status(400).json({ error: error.message });
+        }
+        throw error;
+      }
+      if (linkedInvoice?._id) {
+        await invoicesCol.updateOne({ _id: linkedInvoice._id }, { $set: { stockDeducted: true } });
+      }
     }
 
     const count = await dispatchesCol.countDocuments();
@@ -157,17 +197,6 @@ router.post("/", requireRole("MANAGEMENT_ADMIN", "PRODUCTION_LOGISTICS"), async 
       { _id: new ObjectId(orderId) },
       { $set: { status: "PROCESSING", updatedAt: new Date() } }
     );
-
-    const linkedInvoice = await invoicesCol.findOne({ orderId: order._id });
-    if (!linkedInvoice?.stockDeducted) {
-      await deductInventory(
-        db,
-        (order.items || []).map((it) => ({ productId: it.productId, quantity: it.quantity }))
-      );
-      if (linkedInvoice?._id) {
-        await invoicesCol.updateOne({ _id: linkedInvoice._id }, { $set: { stockDeducted: true } });
-      }
-    }
 
     return res.status(201).json({
       ...dispatchPayload,

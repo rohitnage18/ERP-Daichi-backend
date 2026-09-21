@@ -5,7 +5,7 @@ import { getDb, Invoice, Order, Dealer, Product, DaichiDealer, ObjectId } from "
 import { requireAuth, requireRole } from "../../middleware/auth";
 import { sendEmail } from "../../lib/email";
 import { amountToWords, payableInvoiceTotals, getStateCodeFromGSTIN, getStateNameFromCode, getUQCCode } from "../../lib/utils";
-import { deductInventory } from "../../lib/inventory-stock";
+import { applyInvoiceDeduction, reverseInvoiceDeduction, StockError } from "../../lib/inventory-stock";
 
 /**
  * Resolve lotSize / Units-per-Case for an invoice line from the product master.
@@ -650,12 +650,10 @@ router.post(
 
       const invoice = await buildInvoiceDoc(db, body, req.user!.id, req.user!.email);
       const result = await invoicesCol.insertOne(invoice);
-      await deductInventory(db, invoice.items || []);
-      await invoicesCol.updateOne({ _id: result.insertedId }, { $set: { stockDeducted: true } });
 
       return res.status(201).json({
         ...invoice,
-        stockDeducted: true,
+        stockDeducted: false,
         id: result.insertedId.toString(),
         _id: result.insertedId,
       });
@@ -728,12 +726,10 @@ router.post(
 
       const invoice = await buildInvoiceDoc(db, body, req.user!.id, req.user!.email);
       const result = await invoicesCol.insertOne(invoice);
-      await deductInventory(db, invoice.items || []);
-      await invoicesCol.updateOne({ _id: result.insertedId }, { $set: { stockDeducted: true } });
 
       return res.status(201).json({
         ...invoice,
-        stockDeducted: true,
+        stockDeducted: false,
         id: result.insertedId.toString(),
         _id: result.insertedId,
       });
@@ -786,6 +782,20 @@ router.patch(
           }
         }
       }
+
+      const current = await invoicesCol.findOne({ _id: new ObjectId(id) });
+      if (!current) {
+        return res.status(404).json({ error: "Invoice not found" });
+      }
+      if (updateData.status === "CANCELLED" && current.status !== "CANCELLED" && current.stockDeducted) {
+        await reverseInvoiceDeduction(db, current.items || [], {
+          invoiceId: current._id,
+          invoiceNumber: current.invoiceNumber,
+          userId: req.user!.id,
+          userName: req.user!.email,
+        });
+        updateData.stockDeducted = false;
+      }
       
       const result = await invoicesCol.findOneAndUpdate(
         { _id: new ObjectId(id) },
@@ -821,13 +831,36 @@ router.post(
       if (!ObjectId.isValid(id)) {
         return res.status(400).json({ error: "Invalid invoice ID" });
       }
-      
+
+      const existing = await invoicesCol.findOne({ _id: new ObjectId(id), status: "DRAFT" });
+      if (!existing) {
+        return res.status(404).json({ error: "Invoice not found or not in draft status" });
+      }
+
+      if (!existing.stockDeducted) {
+        try {
+          await applyInvoiceDeduction(db, existing.items || [], {
+            invoiceId: existing._id,
+            invoiceNumber: existing.invoiceNumber,
+            userId: req.user!.id,
+            userName: req.user!.email,
+            type: "invoice_deduction",
+          });
+        } catch (error) {
+          if (error instanceof StockError) {
+            return res.status(400).json({ error: error.message });
+          }
+          throw error;
+        }
+      }
+
       const result = await invoicesCol.findOneAndUpdate(
         { _id: new ObjectId(id), status: "DRAFT" },
         {
           $set: {
             status: "SENT",
             logisticsStatus: "READY_FOR_DISPATCH",
+            stockDeducted: true,
             updatedAt: new Date(),
           },
         },
@@ -835,6 +868,14 @@ router.post(
       );
       
       if (!result) {
+        if (!existing.stockDeducted) {
+          await reverseInvoiceDeduction(db, existing.items || [], {
+            invoiceId: existing._id,
+            invoiceNumber: existing.invoiceNumber,
+            userId: req.user!.id,
+            userName: req.user!.email,
+          });
+        }
         return res.status(404).json({ error: "Invoice not found or not in draft status" });
       }
       
@@ -843,8 +884,59 @@ router.post(
         id: result._id?.toString(),
       });
     } catch (error) {
+      if (error instanceof StockError) {
+        return res.status(400).json({ error: error.message });
+      }
       console.error("Error finalizing invoice:", error);
       return res.status(500).json({ error: "Failed to finalize invoice" });
+    }
+  }
+);
+
+router.post(
+  "/:id/cancel",
+  requireRole("MANAGEMENT_ADMIN", "ACCOUNT"),
+  async (req, res) => {
+    try {
+      const db = await getDb();
+      const invoicesCol = db.collection<Invoice>("invoices");
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({ error: "Invalid invoice ID" });
+      }
+      const invoice = await invoicesCol.findOne({ _id: new ObjectId(id) });
+      if (!invoice) return res.status(404).json({ error: "Invoice not found" });
+      if (invoice.status === "CANCELLED") {
+        return res.status(400).json({ error: "Invoice is already cancelled" });
+      }
+
+      if (invoice.stockDeducted) {
+        await reverseInvoiceDeduction(db, invoice.items || [], {
+          invoiceId: invoice._id,
+          invoiceNumber: invoice.invoiceNumber,
+          userId: req.user!.id,
+          userName: req.user!.email,
+        });
+      }
+
+      const result = await invoicesCol.findOneAndUpdate(
+        { _id: invoice._id },
+        {
+          $set: {
+            status: "CANCELLED",
+            stockDeducted: false,
+            updatedAt: new Date(),
+          },
+        },
+        { returnDocument: "after" }
+      );
+      return res.json({
+        ...withPayableTotals(result!),
+        id: result!._id?.toString(),
+      });
+    } catch (error) {
+      console.error("Error cancelling invoice:", error);
+      return res.status(500).json({ error: "Failed to cancel invoice" });
     }
   }
 );

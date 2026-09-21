@@ -97,6 +97,10 @@ export async function connectMongoDB(): Promise<Db> {
   throw lastError;
 }
 
+export function getMongoClient(): MongoClient | null {
+  return client;
+}
+
 export async function getDb(): Promise<Db> {
   if (!db) {
     return connectMongoDB();
@@ -228,6 +232,29 @@ async function createIndexes(): Promise<void> {
 
   const allowancesCol = db.collection("allowanceClaims");
   await safeCreateIndex(allowancesCol, { userId: 1, claimDate: -1 }, { name: "userId_claimDate" });
+
+  const locationTracksCol = db.collection("locationTracks");
+  await safeCreateIndex(locationTracksCol, { userId: 1, recordedAt: -1 }, { name: "userId_recordedAt" });
+  await safeCreateIndex(locationTracksCol, { recordedAt: -1 }, { name: "recordedAt" });
+
+  const trackingSessionsCol = db.collection("trackingSessions");
+  await safeCreateIndex(trackingSessionsCol, { userId: 1, active: 1 }, { name: "userId_active" });
+
+  const dailyReportsCol = db.collection("dailyReports");
+  await safeCreateIndex(
+    dailyReportsCol,
+    { salespersonId: 1, reportDate: 1 },
+    { unique: true, name: "salespersonId_reportDate" }
+  );
+  await safeCreateIndex(dailyReportsCol, { reportDate: -1 }, { name: "reportDate" });
+
+  const inventoryMovementsCol = db.collection("inventoryMovements");
+  await safeCreateIndex(inventoryMovementsCol, { createdAt: -1 }, { name: "createdAt" });
+  await safeCreateIndex(inventoryMovementsCol, { productId: 1, createdAt: -1 }, { name: "productId_createdAt" });
+  await safeCreateIndex(inventoryMovementsCol, { invoiceId: 1 }, { sparse: true, name: "invoiceId_sparse" });
+
+  const inventoryUploadsCol = db.collection("inventoryUploads");
+  await safeCreateIndex(inventoryUploadsCol, { createdAt: -1 }, { name: "createdAt" });
 
   const emailLogsCol = db.collection("emailLogs");
   await safeCreateIndex(emailLogsCol, { createdAt: -1 });
@@ -855,6 +882,82 @@ export interface LocationTrack {
   accuracy?: number;
   source: string;
   visitId?: ObjectId;
+  sessionId?: ObjectId;
   addressLabel?: string;
   recordedAt: Date;
+}
+
+export interface TrackingSession {
+  _id?: ObjectId;
+  userId: ObjectId;
+  userName?: string;
+  consentAt: Date;
+  startedAt: Date;
+  endedAt?: Date;
+  active: boolean;
+  source?: string;
+}
+
+export interface DailyReportActivity {
+  submittedAt: Date;
+  placesToVisit: string[];
+  salesTarget: number;
+  collectionTarget: number;
+  newDealerAppointmentPlan: string[];
+  demonstrationPlan: string[];
+  farmerMeetingPlan: string[];
+  openingOdometer?: number;
+}
+
+export interface DailyReportClosing {
+  submittedAt: Date;
+  closingOdometer?: number;
+  placesVisited: string[];
+  dealersVisited: { dealerId?: string; dealerName: string }[];
+  salesAchievement: number;
+  collectionAchievement: number;
+  newDealerAppointment?: { dealerId?: string; dealerName?: string; details: string };
+  farmersVisited: { name: string; location?: string; notes?: string }[];
+  otherWork?: string;
+}
+
+/** Parent daily report: one document per salesperson per date, with activity + closing sections. */
+export interface DailyReport {
+  _id?: ObjectId;
+  salespersonId: ObjectId;
+  salespersonName: string;
+  reportDate: Date;
+  zoneName?: string;
+  activity?: DailyReportActivity;
+  closing?: DailyReportClosing;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface InventoryMovement {
+  _id?: ObjectId;
+  productId: ObjectId;
+  sku?: string;
+  productName?: string;
+  quantity: number;
+  type: "invoice_deduction" | "invoice_reversal" | "upload" | "manual_adjust" | "dispatch_deduction";
+  invoiceId?: ObjectId;
+  invoiceNumber?: string;
+  uploadId?: ObjectId;
+  warehouseCode?: string;
+  userId?: ObjectId;
+  userName?: string;
+  notes?: string;
+  createdAt: Date;
+}
+
+export interface InventoryUploadLog {
+  _id?: ObjectId;
+  fileName: string;
+  uploadedById: ObjectId;
+  uploadedByName: string;
+  rowsSucceeded: number;
+  rowsFailed: number;
+  errors: { row: number; sku?: string; error: string }[];
+  createdAt: Date;
 }

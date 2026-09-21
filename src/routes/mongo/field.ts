@@ -1,6 +1,8 @@
 import { Router } from "express";
-import { getDb, DailyLog, SalesVisit, AllowanceClaim, LocationTrack, ObjectId } from "../../lib/mongodb";
+import { getDb, DailyLog, SalesVisit, LocationTrack, TrackingSession, ObjectId } from "../../lib/mongodb";
 import { requireAuth, requireRole } from "../../middleware/auth";
+import { canAcceptLivePing, isLocationAnomaly, isValidCoord } from "../../lib/tracking";
+import { dateKeyIST, dayEndIST, dayStartIST } from "../../lib/dates-ist";
 
 const router = Router();
 
@@ -244,112 +246,149 @@ router.post("/daily-logs", async (req, res) => {
   }
 });
 
-router.get("/allowances", async (req, res) => {
+router.get("/allowances", (_req, res) => {
+  return res.status(404).json({ error: "Allowance claims have been removed from the Sales module" });
+});
+
+router.post("/allowances", (_req, res) => {
+  return res.status(404).json({ error: "Allowance claims have been removed from the Sales module" });
+});
+
+router.patch("/allowances", (_req, res) => {
+  return res.status(404).json({ error: "Allowance claims have been removed from the Sales module" });
+});
+
+router.get("/location/live", requireRole("MANAGEMENT_ADMIN"), async (req, res) => {
   try {
     const db = await getDb();
-    const claimsCol = db.collection<AllowanceClaim>("allowanceClaims");
+    const tracksCol = db.collection<LocationTrack>("locationTracks");
+    const sessionsCol = db.collection<TrackingSession>("trackingSessions");
+    const from = dayStartIST(typeof req.query.date === "string" ? req.query.date : new Date());
+    const to = dayEndIST(from);
 
-    const filter: Record<string, unknown> = { ...listFilter(req) };
-    if (req.query.status) {
-      filter.status = req.query.status;
-    }
-
-    const claims = await claimsCol
-      .find(filter)
-      .sort({ claimDate: -1 })
-      .limit(200)
+    const tracks = await tracksCol
+      .find({ recordedAt: { $gte: from, $lte: to } })
+      .sort({ recordedAt: -1 })
       .toArray();
 
+    const latest = new Map<string, LocationTrack>();
+    for (const track of tracks) {
+      const key = track.userId.toString();
+      if (!latest.has(key)) latest.set(key, track);
+    }
+
+    const sessions = await sessionsCol.find({ active: true }).toArray();
+    const sessionByUser = new Map(sessions.map((s) => [s.userId.toString(), s]));
+    const now = new Date();
+
     return res.json(
-      claims.map((c) => ({
-        ...c,
-        id: c._id?.toString(),
-        user: { fullName: c.userName },
+      [...latest.values()].map((t) => ({
+        ...t,
+        id: t._id?.toString(),
+        userId: t.userId.toString(),
+        trackingActive: Boolean(sessionByUser.get(t.userId.toString())?.active),
+        anomaly: isLocationAnomaly(t.recordedAt, now),
       }))
     );
   } catch (error) {
-    console.error("Allowances GET error:", error);
-    return res.status(500).json({ error: "Failed to fetch allowances" });
+    console.error("Location live GET error:", error);
+    return res.status(500).json({ error: "Failed to fetch live locations" });
   }
 });
 
-router.post("/allowances", async (req, res) => {
+router.get("/location/trail", async (req, res) => {
+  try {
+    const isAdmin = req.user!.role === "MANAGEMENT_ADMIN";
+    const qUserId = typeof req.query.userId === "string" ? req.query.userId : req.user!.id;
+    if (!isAdmin && qUserId !== req.user!.id) {
+      return res.status(403).json({ error: "You can only view your own tracking data" });
+    }
+    const date = typeof req.query.date === "string" ? req.query.date : dateKeyIST();
+    const db = await getDb();
+    const tracksCol = db.collection<LocationTrack>("locationTracks");
+    const tracks = await tracksCol
+      .find({
+        ...userIdFilter(qUserId),
+        recordedAt: { $gte: dayStartIST(date), $lte: dayEndIST(date) },
+      })
+      .sort({ recordedAt: 1 })
+      .limit(2000)
+      .toArray();
+
+    return res.json(
+      tracks.map((t) => ({
+        ...t,
+        id: t._id?.toString(),
+        userId: t.userId.toString(),
+      }))
+    );
+  } catch (error) {
+    console.error("Location trail GET error:", error);
+    return res.status(500).json({ error: "Failed to fetch location trail" });
+  }
+});
+
+router.get("/location/session", async (req, res) => {
   try {
     const db = await getDb();
-    const claimsCol = db.collection<AllowanceClaim>("allowanceClaims");
-    const data = req.body;
+    const sessionsCol = db.collection<TrackingSession>("trackingSessions");
+    const session = await sessionsCol.findOne({ ...userIdFilter(req.user!.id), active: true });
+    return res.json({
+      active: Boolean(session?.active),
+      consented: Boolean(session?.consentAt),
+      startedAt: session?.startedAt || null,
+      sessionId: session?._id?.toString() || null,
+    });
+  } catch (error) {
+    console.error("Location session GET error:", error);
+    return res.status(500).json({ error: "Failed to fetch tracking session" });
+  }
+});
 
-    const claim: AllowanceClaim = {
-      claimDate: new Date(data.claimDate || Date.now()),
+router.post("/location/session/start", async (req, res) => {
+  try {
+    if (req.body?.consent !== true) {
+      return res.status(400).json({ error: "Tracking requires explicit consent." });
+    }
+    const db = await getDb();
+    const sessionsCol = db.collection<TrackingSession>("trackingSessions");
+    await sessionsCol.updateMany(
+      { ...userIdFilter(req.user!.id), active: true },
+      { $set: { active: false, endedAt: new Date() } }
+    );
+    const session: TrackingSession = {
       userId: new ObjectId(req.user!.id),
       userName: actorName(req),
-      claimType: data.claimType,
-      amount: Number(data.amount) || 0,
-      description: data.description,
-      kilometers:
-        data.kilometers != null && data.kilometers !== ""
-          ? Number(data.kilometers)
-          : undefined,
-      receiptNote: data.receiptNote || undefined,
-      odometerPhoto: data.odometerPhoto || undefined,
-      latitude: data.latitude ?? undefined,
-      longitude: data.longitude ?? undefined,
-      locationLabel: data.locationLabel || undefined,
-      status: "PENDING",
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      consentAt: new Date(),
+      startedAt: new Date(),
+      active: true,
+      source: "OPT_IN",
     };
-
-    const result = await claimsCol.insertOne(claim);
-
-    await recordGpsTrack(req.user!.id, actorName(req), data, "ALLOWANCE");
-
+    const result = await sessionsCol.insertOne(session);
     return res.status(201).json({
-      ...claim,
-      id: result.insertedId.toString(),
+      active: true,
+      consented: true,
+      sessionId: result.insertedId.toString(),
+      startedAt: session.startedAt,
     });
   } catch (error) {
-    console.error("Allowances POST error:", error);
-    return res.status(500).json({ error: "Failed to submit claim" });
+    console.error("Location session start error:", error);
+    return res.status(500).json({ error: "Failed to start tracking" });
   }
 });
 
-router.patch("/allowances", requireRole("MANAGEMENT_ADMIN"), async (req, res) => {
+router.post("/location/session/stop", async (req, res) => {
   try {
     const db = await getDb();
-    const claimsCol = db.collection<AllowanceClaim>("allowanceClaims");
-    const { id, status, rejectionReason } = req.body;
-
-    if (!id || !ObjectId.isValid(id)) {
-      return res.status(400).json({ error: "Valid claim ID required" });
-    }
-
-    const result = await claimsCol.findOneAndUpdate(
-      { _id: new ObjectId(id) },
-      {
-        $set: {
-          status,
-          rejectionReason: status === "REJECTED" ? rejectionReason : undefined,
-          approvedById: new ObjectId(req.user!.id),
-          approvedByName: actorName(req),
-          approvedAt: new Date(),
-          updatedAt: new Date(),
-        },
-      },
-      { returnDocument: "after" }
+    const sessionsCol = db.collection<TrackingSession>("trackingSessions");
+    await sessionsCol.updateMany(
+      { ...userIdFilter(req.user!.id), active: true },
+      { $set: { active: false, endedAt: new Date() } }
     );
-
-    if (!result) {
-      return res.status(404).json({ error: "Claim not found" });
-    }
-
-    return res.json({
-      ...result,
-      id: result._id?.toString(),
-    });
+    return res.json({ active: false });
   } catch (error) {
-    console.error("Allowances PATCH error:", error);
-    return res.status(500).json({ error: "Failed to update claim" });
+    console.error("Location session stop error:", error);
+    return res.status(500).json({ error: "Failed to stop tracking" });
   }
 });
 
@@ -382,15 +421,34 @@ router.post("/location", async (req, res) => {
     const db = await getDb();
     const tracksCol = db.collection<LocationTrack>("locationTracks");
     const data = req.body;
+    if (!isValidCoord(data.latitude, data.longitude)) {
+      return res.status(400).json({ error: "Valid latitude and longitude are required" });
+    }
+
+    const source = data.source || "MANUAL";
+    let sessionId: ObjectId | undefined;
+    if (source === "LIVE_TRACK") {
+      const sessionsCol = db.collection<TrackingSession>("trackingSessions");
+      const session = await sessionsCol.findOne({ ...userIdFilter(req.user!.id), active: true });
+      const gate = canAcceptLivePing({
+        consented: Boolean(session?.consentAt),
+        sessionActive: Boolean(session?.active),
+      });
+      if (!gate.ok) {
+        return res.status(400).json({ error: gate.error });
+      }
+      sessionId = session?._id;
+    }
 
     const track: LocationTrack = {
       userId: new ObjectId(req.user!.id),
       userName: actorName(req),
-      latitude: data.latitude,
-      longitude: data.longitude,
+      latitude: Number(data.latitude),
+      longitude: Number(data.longitude),
       accuracy: data.accuracy ?? undefined,
-      source: data.source || "MANUAL",
+      source,
       visitId: data.visitId && ObjectId.isValid(data.visitId) ? new ObjectId(data.visitId) : undefined,
+      sessionId,
       addressLabel: data.addressLabel || undefined,
       recordedAt: new Date(),
     };
