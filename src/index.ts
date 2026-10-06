@@ -85,11 +85,13 @@ app.get("/", (_req, res) => {
 app.get("/stats", getPublicStats);
 app.get("/api/public/stats", getPublicStats);
 
-app.use("/api", mongoApiRouter);
-
-app.use("/api/sync/daichi", daichiSyncRouter);
+/** Dealer, sync, and export routes must be registered before the /api router.
+ *  The field router is mounted on /api without a prefix and rejects other roles. */
 app.use("/api/daichi-dealers", daichiDealersRouter);
+app.use("/api/sync/daichi", daichiSyncRouter);
 app.use("/api/exports", exportsRouter);
+
+app.use("/api", mongoApiRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
