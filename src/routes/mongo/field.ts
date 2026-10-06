@@ -6,11 +6,22 @@ import { dateKeyIST, dayEndIST, dayStartIST } from "../../lib/dates-ist";
 
 const router = Router();
 
+const FIELD_PREFIXES = ["/visits", "/daily-logs", "/allowances", "/location"];
+
+function isFieldPath(path: string): boolean {
+  return FIELD_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
 router.use((req, res, next) => {
-  if (req.path.startsWith("/public")) return next("router");
+  // This router is mounted at /api with no prefix. Skip paths it does not own
+  // so Account and other roles can still reach dealers, invoices, and exports.
+  if (!isFieldPath(req.path)) return next("router");
   return requireAuth(req, res, next);
 });
-router.use(requireRole("SALES_MARKETING", "MANAGEMENT_ADMIN"));
+router.use((req, res, next) => {
+  if (!isFieldPath(req.path)) return next("router");
+  return requireRole("SALES_MARKETING", "MANAGEMENT_ADMIN")(req, res, next);
+});
 
 function dayOnly(d: Date) {
   const x = new Date(d);
