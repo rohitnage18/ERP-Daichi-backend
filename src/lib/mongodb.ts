@@ -401,6 +401,8 @@ export interface Order {
   rejectionReason?: string;
   /** True when inventory was reserved on approval */
   stockReserved?: boolean;
+  /** Set when the order was approved but stock could not be reserved */
+  stockWarning?: string;
   createdById: ObjectId;
   createdByName?: string;
   approvedById?: ObjectId;

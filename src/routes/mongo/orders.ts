@@ -394,18 +394,27 @@ router.post(
         return res.status(404).json({ error: "Order not found or not pending approval" });
       }
 
-      // Spec: block / reserve inventory when allocated to sales order.
-      await reserveStockForOrder(db, existing.items || [], existing._id!, {
-        userId: req.user!.id,
-        userName: req.user!.email,
-      });
+      // Reserve stock when it is available. A shortage must not block approval.
+      let stockReserved = false;
+      let stockWarning: string | undefined;
+      try {
+        await reserveStockForOrder(db, existing.items || [], existing._id!, {
+          userId: req.user!.id,
+          userName: req.user!.email,
+        });
+        stockReserved = true;
+      } catch (error) {
+        if (!(error instanceof StockError)) throw error;
+        stockWarning = error.message;
+      }
 
       const result = await ordersCol.findOneAndUpdate(
         { _id: new ObjectId(id), status: "PENDING_APPROVAL" },
         {
           $set: {
             status: "APPROVED",
-            stockReserved: true,
+            stockReserved,
+            stockWarning: stockWarning || "",
             approvedById: new ObjectId(req.user!.id),
             approvedByName: req.user!.email,
             approvedAt: new Date(),
@@ -416,16 +425,19 @@ router.post(
       );
 
       if (!result) {
-        await releaseStockReservation(db, existing.items || [], existing._id!, {
-          userId: req.user!.id,
-          userName: req.user!.email,
-        }).catch(() => undefined);
+        if (stockReserved) {
+          await releaseStockReservation(db, existing.items || [], existing._id!, {
+            userId: req.user!.id,
+            userName: req.user!.email,
+          }).catch(() => undefined);
+        }
         return res.status(404).json({ error: "Order not found or not pending approval" });
       }
 
       return res.json({
         ...result,
         id: result._id?.toString(),
+        stockWarning: stockWarning || undefined,
       });
     } catch (error) {
       if (error instanceof StockError) {

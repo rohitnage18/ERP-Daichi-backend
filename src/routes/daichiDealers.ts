@@ -43,7 +43,7 @@ router.post("/sync/auto", requireRole("MANAGEMENT_ADMIN", "SALES_MARKETING"), as
 
 router.post("/sync", requireRole("MANAGEMENT_ADMIN", "SALES_MARKETING"), async (req, res) => {
   if (syncInProgress || syncInFlight) {
-    return res.status(409).json({ error: "Sync already in progress" });
+    return res.json({ success: true, alreadyRunning: true, message: "Sync already in progress" });
   }
 
   const full = req.query.full === "true";
